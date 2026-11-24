@@ -1,0 +1,19 @@
+# بيانات الشركة — لا تُرفع أبداً
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+backups/
+# بايثون
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+# محرر / نظام
+.vscode/
+.idea/
+.DS_Store
+# ملفات سرية
+.env
+secrets.toml
