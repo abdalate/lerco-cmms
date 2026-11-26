@@ -940,17 +940,83 @@ def wr_review(doc_no, action, actor=None, reason=None):
             raise ValueError("Unknown action")
 
 
-def add_labor(job_no, work_date, workers=0, spv_hours=0, tech_hours=0,
-              ot_hours=0, cont_hours=0, note=None):
-    job = get_job(job_no)
+# الطاقة الإنتاجية اليومية للفنيين فقط؛ لا تشمل المشرفين أو الإضافي أو المقاولين.
+TECH_HOURS_PER_DAY = 5
+
+
+def _validate_daily_tech_hours(conn, job_no, work_date, new_tech_hours,
+                               replacing=False):
+    """يتحقق من مجموع ساعات الفنيين العادية مقابل حضور فنيي القسم في اليوم."""
+    job = conn.execute("SELECT exec_dept FROM jobs WHERE doc_no=?", (job_no,)).fetchone()
     if not job:
         raise ValueError("Document does not exist")
-    if job.get("accepted_date"):
-        raise ValueError("Work Order is closed and accepted; hours cannot be recorded")
+    dept = job["exec_dept"]
+    day = _iso(work_date)
+
+    totals = conn.execute(
+        """SELECT COALESCE(SUM(l.tech_hours), 0) AS used,
+                  COALESCE(SUM(CASE WHEN l.job_no=? THEN l.tech_hours ELSE 0 END), 0) AS current_job
+           FROM labor_log l
+           JOIN jobs j ON j.doc_no=l.job_no
+           WHERE j.exec_dept=? AND l.work_date=?""",
+        (job_no, dept, day)).fetchone()
+    used = float(totals["used"] or 0)
+    if replacing:
+        used -= float(totals["current_job"] or 0)
+    proposed = used + float(new_tech_hours or 0)
+
+    manpower = conn.execute(
+        "SELECT technicians FROM manpower_daily WHERE report_date=? AND dept=?",
+        (day, dept)).fetchone()
+    if not manpower:
+        if proposed > 0:
+            raise ValueError(
+                f"Daily manpower has not been entered for {dept} on {day}. "
+                "Save the attendance record before recording regular technician hours."
+            )
+        capacity = 0
+    else:
+        capacity = int(manpower["technicians"] or 0) * TECH_HOURS_PER_DAY
+
+    if proposed > capacity:
+        raise ValueError(
+            f"Regular technician hours exceed daily capacity for {dept} on {day}: "
+            f"{proposed:g} h recorded / {capacity:g} h available "
+            f"({int(manpower['technicians'] or 0) if manpower else 0} technicians × "
+            f"{TECH_HOURS_PER_DAY} h)."
+        )
+
+
+def get_daily_labor_capacity(report_date, dept):
+    """ملخص طاقة الفنيين اليومية والساعات العادية المسجلة للقسم."""
+    day = _iso(report_date)
+    manpower = query(
+        "SELECT technicians FROM manpower_daily WHERE report_date=? AND dept=?",
+        (day, dept))
+    technicians = int(manpower[0]["technicians"] or 0) if manpower else 0
+    used = query(
+        """SELECT COALESCE(SUM(l.tech_hours), 0) AS used
+           FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
+           WHERE j.exec_dept=? AND l.work_date=?""", (dept, day))
+    recorded = float(used[0]["used"] or 0) if used else 0.0
+    capacity = technicians * TECH_HOURS_PER_DAY
+    return {"has_manpower": bool(manpower), "technicians": technicians,
+            "capacity": capacity, "used": recorded,
+            "remaining": capacity - recorded}
+
+
+def add_labor(job_no, work_date, workers=0, spv_hours=0, tech_hours=0,
+              ot_hours=0, cont_hours=0, note=None):
     for v in (workers, spv_hours, tech_hours, ot_hours, cont_hours):
-        if v < 0:
+        if v is None or v < 0:
             raise ValueError("Values cannot be negative")
     with tx() as conn:
+        job = conn.execute("SELECT accepted_date FROM jobs WHERE doc_no=?", (job_no,)).fetchone()
+        if not job:
+            raise ValueError("Document does not exist")
+        if job["accepted_date"]:
+            raise ValueError("Work Order is closed and accepted; hours cannot be recorded")
+        _validate_daily_tech_hours(conn, job_no, work_date, tech_hours)
         conn.execute(
             "INSERT INTO labor_log(job_no,work_date,workers,spv_hours,tech_hours,"
             "ot_hours,cont_hours,note) VALUES(?,?,?,?,?,?,?,?)",
@@ -971,6 +1037,7 @@ def set_daily_labor(job_no, work_date, workers=0, spv_hours=0, tech_hours=0,
             raise ValueError("Document does not exist")
         if job["accepted_date"]:
             raise ValueError("Work Order is closed and accepted; its hours cannot be modified")
+        _validate_daily_tech_hours(conn, job_no, work_date, tech_hours, replacing=True)
         conn.execute("DELETE FROM labor_log WHERE job_no=? AND work_date=?",
                      (job_no, _iso(work_date)))
         if any(v > 0 for v in vals):
@@ -1142,11 +1209,27 @@ MANPOWER_FIELDS = ["approved", "supervisors", "technicians", "leave_n", "absent"
 
 def save_manpower(report_date, dept, **vals):
     row = [int(vals.get(k, 0) or 0) for k in MANPOWER_FIELDS]
+    if any(v < 0 for v in row):
+        raise ValueError("Manpower values cannot be negative")
+    day = _iso(report_date)
+    technicians = row[MANPOWER_FIELDS.index("technicians")]
     with tx() as conn:
+        used = conn.execute(
+            """SELECT COALESCE(SUM(l.tech_hours), 0) AS used
+               FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
+               WHERE j.exec_dept=? AND l.work_date=?""", (dept, day)).fetchone()
+        recorded = float(used["used"] or 0)
+        capacity = technicians * TECH_HOURS_PER_DAY
+        if recorded > capacity:
+            raise ValueError(
+                f"Cannot save manpower: {recorded:g} regular technician hours are already "
+                f"recorded, but {technicians} technicians provide only {capacity:g} hours "
+                f"of daily capacity."
+            )
         conn.execute(
             f"INSERT OR REPLACE INTO manpower_daily(report_date,dept,"
             f"{','.join(MANPOWER_FIELDS)}) VALUES(?,?,{','.join('?' * len(MANPOWER_FIELDS))})",
-            [_iso(report_date), dept] + row)
+            [day, dept] + row)
 
 
 def get_manpower(report_date, dept):
