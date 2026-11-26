@@ -146,7 +146,9 @@ def _maint(D, y, m):
         " SUM(l.ot_hours) ot, SUM(l.cont_hours) cont FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no"
         " WHERE j.exec_dept=? AND l.work_date BETWEEN ? AND ? GROUP BY j.doc_type, j.category, j.cat_set",
         (D, s, e))
-    reg = sum((r["spv"] or 0) + (r["tech"] or 0) for r in hrs)
+    tech = sum(r["tech"] or 0 for r in hrs)
+    spv = sum(r["spv"] or 0 for r in hrs)
+    reg = tech  # استغلال الطاقة الإنتاجية يُحسب للفنيين فقط
     ot = sum(r["ot"] or 0 for r in hrs)
     cont = sum(r["cont"] or 0 for r in hrs)
     wo_h = [r for r in hrs if r["doc_type"] == "WO" and r["cat_set"]]
@@ -154,16 +156,16 @@ def _maint(D, y, m):
     pl_h = sum((r["spv"] or 0) + (r["tech"] or 0) + (r["ot"] or 0) + (r["cont"] or 0)
                for r in wo_h if r["category"] in ("PM", "PD"))
     planned = _pct(pl_h, wo_total)
-    mp = db.query("SELECT COUNT(*) days, SUM(supervisors+technicians) heads FROM manpower_daily"
-                  " WHERE dept=? AND report_date BETWEEN ? AND ? AND supervisors+technicians>0", (D, s, e))[0]
+    mp = db.query("SELECT COUNT(*) days, SUM(technicians) heads FROM manpower_daily"
+                  " WHERE dept=? AND report_date BETWEEN ? AND ? AND technicians>0", (D, s, e))[0]
     avail = (mp["heads"] or 0) * shift
-    util = _pct(reg, avail)
+    util = _pct(tech, avail)
     lab_days = db.query("SELECT COUNT(DISTINCT l.work_date) n FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no"
                         " WHERE j.exec_dept=? AND l.work_date BETWEEN ? AND ?", (D, s, e))[0]["n"]
     if lab_days and mp["days"] < lab_days:
-        notes.append(f"Manpower (headcount) was entered for {mp['days']} of {lab_days} working days — "
-                     "utilization may be understated" if mp["days"] else
-                     "Manpower (headcount) was not entered — utilization cannot be calculated")
+        notes.append(f"Technician attendance was entered for {mp['days']} of {lab_days} working days — "
+                     "technician utilization may be understated" if mp["days"] else
+                     "Technician attendance was not entered — utilization cannot be calculated")
     # estimate accuracy
     est = db.query(
         "SELECT j.est_hours est, COALESCE((SELECT SUM(spv_hours+tech_hours+ot_hours+cont_hours)"
@@ -200,8 +202,10 @@ def _maint(D, y, m):
             ("Open Work Orders", len(bl)), ("Estimated hours", round(bl_hours, 1)),
             (f"Older than {age_lim:g} days", aged)]),
         _sec("Manpower & hours", [
-            ("Regular hours (SPV + TECH)", round(reg, 1)), ("Overtime hours", round(ot, 1)),
-            ("Contractor hours", round(cont, 1)), ("Available hours", round(avail, 1)),
+            ("Regular technician hours (TECH)", round(tech, 1)),
+            ("Supervisor hours (SPV)", round(spv, 1)), ("Overtime hours", round(ot, 1)),
+            ("Contractor hours", round(cont, 1)),
+            ("Available technician hours", round(avail, 1)),
             ("Utilization (%)", util if util is not None else "—"),
             ("Overtime share (%)", _pct(ot, reg + ot) if reg + ot else "—")]),
         _sec("Quality & planning", [
