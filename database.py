@@ -940,8 +940,13 @@ def wr_review(doc_no, action, actor=None, reason=None):
             raise ValueError("Unknown action")
 
 
-# الطاقة الإنتاجية اليومية للفنيين فقط؛ لا تشمل المشرفين أو الإضافي أو المقاولين.
+# القيمة الافتراضية محفوظة للتوافق؛ القيمة الفعلية تُقرأ دائماً من Report Settings.
 TECH_HOURS_PER_DAY = 5
+
+
+def _shift_hours_per_day():
+    """ساعات الفني اليومية من الإعدادات؛ نفس المصدر المستخدم في التقارير الشهرية."""
+    return float(get_setting("shift_hours"))
 
 
 def _validate_daily_tech_hours(conn, job_no, work_date, new_tech_hours,
@@ -976,14 +981,15 @@ def _validate_daily_tech_hours(conn, job_no, work_date, new_tech_hours,
             )
         capacity = 0
     else:
-        capacity = int(manpower["technicians"] or 0) * TECH_HOURS_PER_DAY
+        shift_hours = _shift_hours_per_day()
+        capacity = int(manpower["technicians"] or 0) * shift_hours
 
     if proposed > capacity:
         raise ValueError(
             f"Regular technician hours exceed daily capacity for {dept} on {day}: "
             f"{proposed:g} h recorded / {capacity:g} h available "
             f"({int(manpower['technicians'] or 0) if manpower else 0} technicians × "
-            f"{TECH_HOURS_PER_DAY} h)."
+            f"{_shift_hours_per_day():g} h)."
         )
 
 
@@ -999,7 +1005,7 @@ def get_daily_labor_capacity(report_date, dept):
            FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
            WHERE j.exec_dept=? AND l.work_date=?""", (dept, day))
     recorded = float(used[0]["used"] or 0) if used else 0.0
-    capacity = technicians * TECH_HOURS_PER_DAY
+    capacity = technicians * _shift_hours_per_day()
     return {"has_manpower": bool(manpower), "technicians": technicians,
             "capacity": capacity, "used": recorded,
             "remaining": capacity - recorded}
@@ -1219,7 +1225,7 @@ def save_manpower(report_date, dept, **vals):
                FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
                WHERE j.exec_dept=? AND l.work_date=?""", (dept, day)).fetchone()
         recorded = float(used["used"] or 0)
-        capacity = technicians * TECH_HOURS_PER_DAY
+        capacity = technicians * _shift_hours_per_day()
         if recorded > capacity:
             raise ValueError(
                 f"Cannot save manpower: {recorded:g} regular technician hours are already "
