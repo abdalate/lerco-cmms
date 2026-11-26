@@ -1475,8 +1475,22 @@ def page_hours(embedded=False):
                                                 value=int(mp.get(k, 0) or 0))
                     for i, k in enumerate(db.MANPOWER_FIELDS)}
             if st.form_submit_button("Save Manpower"):
-                db.save_manpower(d, dept, **vals)
-                st.success("Saved")
+                try:
+                    db.save_manpower(d, dept, **vals)
+                    st.success("Saved")
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+
+    capacity = db.get_daily_labor_capacity(d, dept)
+    if capacity["has_manpower"]:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Technicians Present", capacity["technicians"])
+        m2.metric("Regular Hours Capacity", f'{capacity["capacity"]:g} h')
+        m3.metric("Regular TECH Hours Used", f'{capacity["used"]:g} h')
+        m4.metric("Remaining Capacity", f'{capacity["remaining"]:g} h')
+    else:
+        st.warning("Daily manpower has not been entered. Save technician attendance before recording regular TECH hours.")
 
     rows = db.daily_report(dept, d)
     st.subheader(f"Jobs — {db.dept_en(dept)} on {d.isoformat()}")
