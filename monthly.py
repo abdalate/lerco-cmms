@@ -148,7 +148,7 @@ def _maint(D, y, m):
         (D, s, e))
     tech = sum(r["tech"] or 0 for r in hrs)
     spv = sum(r["spv"] or 0 for r in hrs)
-    reg = tech  # استغلال الطاقة الإنتاجية يُحسب للفنيين فقط
+    reg = tech + spv  # إجمالي الساعات العادية؛ الاستغلال نفسه يُحسب للفنيين فقط
     ot = sum(r["ot"] or 0 for r in hrs)
     cont = sum(r["cont"] or 0 for r in hrs)
     wo_h = [r for r in hrs if r["doc_type"] == "WO" and r["cat_set"]]
