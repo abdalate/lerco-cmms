@@ -1097,7 +1097,7 @@ def add_labor(job_no, work_date, workers=0, spv_hours=0, tech_hours=0,
             raise ValueError("Document does not exist")
         if job["accepted_date"] or job["auto_closed_at"]:
             raise ValueError("Work Order is finally closed; hours cannot be recorded")
-        _validate_daily_tech_hours(conn, job_no, work_date, tech_hours)
+        _validate_daily_tech_hours(conn, job_no, work_date, tech_hours, replacing=True)
         # The legacy database has a non-unique index on (job_no, work_date),
         # so replace matching daily rows explicitly instead of relying on ON CONFLICT.
         day = _iso(work_date)
