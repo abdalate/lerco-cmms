@@ -1,5 +1,5 @@
 """Core document cycle: WR -> WO -> work -> acceptance, and the Job Card rules."""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -30,14 +30,16 @@ def test_wr_to_wo_to_acceptance(today):
 
 
 def test_labor_entry_updates_existing_job_date_instead_of_duplicate(today):
-    wr = db.create_wr(today, "REF", "M", "Repair pump", tag_no="P-104", actor="REF")
-    wo = db.create_job("WO", today, "M", "Repair pump", wr_no=wr, actor="PLN",
+    # Use a separate date so records from other workflow tests cannot affect capacity.
+    work_day = today + timedelta(days=1)
+    wr = db.create_wr(work_day, "REF", "M", "Repair pump", tag_no="P-104", actor="REF")
+    wo = db.create_job("WO", work_day, "M", "Repair pump", wr_no=wr, actor="PLN",
                        requesting_dept="REF", est_hours=8.0)
-    db.save_manpower(today, "M", technicians=4)
-    db.add_labor(wo, today, 0, 0, 10, 0, 0, "First entry")
-    db.add_labor(wo, today, 0, 2, 12, 1, 0, "Corrected entry")
+    db.save_manpower(work_day, "M", technicians=4)
+    db.add_labor(wo, work_day, 0, 0, 10, 0, 0, "First entry")
+    db.add_labor(wo, work_day, 0, 2, 12, 1, 0, "Corrected entry")
     rows = db.query("SELECT * FROM labor_log WHERE job_no=? AND work_date=?",
-                    (wo, today.isoformat()))
+                    (wo, work_day.isoformat()))
     assert len(rows) == 1
     assert rows[0]["spv_hours"] == 2
     assert rows[0]["tech_hours"] == 12
