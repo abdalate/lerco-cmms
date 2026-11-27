@@ -30,7 +30,7 @@ def test_wr_to_wo_to_acceptance(today):
 
 
 def test_labor_entry_updates_existing_job_date_instead_of_duplicate(today):
-    wr = db.create_wr(today, "REF", "M", "Repair pump", actor="REF")
+    wr = db.create_wr(today, "REF", "M", "Repair pump", tag_no="P-104", actor="REF")
     wo = db.create_job("WO", today, "M", "Repair pump", wr_no=wr, actor="PLN",
                        requesting_dept="REF", est_hours=8.0)
     db.save_manpower(today, "M", technicians=4)
