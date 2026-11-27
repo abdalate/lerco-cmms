@@ -495,7 +495,7 @@ def init_db():
         if _cols(conn, "manpower_daily"):
             conn.execute(
                 "INSERT OR IGNORE INTO department_approvals(dept,approved,updated_by) "
-                "SELECT dept, MAX(approved), 'MIGRATION' FROM manpower_daily GROUP BY dept")
+                "SELECT m.dept, m.approved, 'MIGRATION' FROM manpower_daily m WHERE m.report_date=(SELECT MAX(m2.report_date) FROM manpower_daily m2 WHERE m2.dept=m.dept)")
         conn.executescript(INDEXES)
         conn.execute("BEGIN IMMEDIATE")
         try:
