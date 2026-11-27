@@ -55,6 +55,7 @@ def _init():
 
 _init()
 db.jc_auto_close()      # safety net: closes Job Cards left open at the end of their day
+db.auto_close_unaccepted_jobs()  # apply the requester acceptance deadline
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
@@ -328,7 +329,9 @@ EVENT_AR = {
     "WO_INSPECTED": "✅ Inspection and stock check completed", "JOB_STARTED": "🛠️ Work started",
     "JOB_PROGRESS": "📈 Progress updated", "JOB_COMPLETED": "🏁 Work completed",
     "JOB_REOPENED": "↩️ Work reopened", "JOB_ACCEPTED": "🤝 Requesting Department accepted the work; closed",
-    "JOB_RETURNED": "↩️ Requesting Department returned the work to Maintenance", "SR_ISSUED": "🚧 Service Request issued",
+    "JOB_RETURNED": "↩️ Requesting Department returned the work to Maintenance",
+    "JOB_AUTO_CLOSED": "⏱️ Work administratively closed — requester did not confirm acceptance",
+    "SR_ISSUED": "🚧 Service Request issued",
     "SR_STATUS": "🚧 Service Request status updated",
     "WG_CREATED": "🧩 Work Group created", "WG_LINKED": "🔗 Document linked to Work Group",
     "WG_UNLINKED": "✂️ Document unlinked", "WG_STATUS": "🧩 Work Group status updated",
