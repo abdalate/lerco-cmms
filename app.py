@@ -1693,6 +1693,55 @@ def page_daily():
 # ----------------------------------------------------------------------------
 # Master Data
 # ----------------------------------------------------------------------------
+def page_admin_control():
+    st.header("Admin Control Panel")
+    token = st.session_state.get("admin_token")
+    if token and not db.admin_session_valid(token):
+        st.session_state.pop("admin_token", None)
+        token = None
+    if not token:
+        st.caption("Administrator access is separate from the department role selector.")
+        with st.form("admin_login_form"):
+            username = st.text_input("Administrator username", value="admin")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in", type="primary")
+        if submitted:
+            token = db.admin_login(username, password)
+            if token:
+                st.session_state["admin_token"] = token
+                st.rerun()
+            else:
+                st.error("Invalid administrator username or password.")
+        return
+
+    head = st.columns([7, 2])
+    head[0].success("Administrator session is active.")
+    if head[1].button("Sign out", key="admin_signout"):
+        db.admin_logout(token)
+        st.session_state.pop("admin_token", None)
+        st.rerun()
+
+    st.subheader("Approved Technician Headcount")
+    st.caption("Set the approved technician establishment for each maintenance department. Daily department users cannot change this value.")
+    dept = st.selectbox("Maintenance Department", MAINT, format_func=db.dept_en, key="admin_approved_dept")
+    current = db.get_department_approved(dept)
+    with st.form("admin_approved_form"):
+        approved = st.number_input("Approved Technicians", min_value=0, step=1, value=current)
+        save = st.form_submit_button("Save Approved Headcount", type="primary")
+    if save:
+        try:
+            db.set_department_approved(dept, approved, token)
+            done(f"Approved headcount for {db.dept_en(dept)} saved")
+        except (ValueError, PermissionError) as e:
+            st.error(str(e))
+
+    st.subheader("Administrative Audit Log")
+    audit = db.admin_audit_log()
+    show_df(audit, {"created_at": "Date / Time", "username": "Administrator",
+                    "action": "Action", "dept": "Department",
+                    "old_value": "Previous Value", "new_value": "New Value"}, _h(len(audit), 300))
+
+
 def page_master():
     h = st.columns([8, 2])
     h[0].subheader("Master Data")
@@ -2473,6 +2522,8 @@ else:
             ("pm", "🗓️ Maintenance Plan", page_pm_plan),
             ("daily", "📄 Daily Report", page_daily),
             ("monthly", "📅 Monthly Report", page_monthly)]
+
+MENU.append(("admin", "Admin Control Panel", page_admin_control))
 
 _badge = _badges()
 _labels = {k: (f"{l} ({_badge[k]})" if _badge.get(k) else l) for k, l, _ in MENU}
