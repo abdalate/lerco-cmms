@@ -227,10 +227,11 @@ def main():
             counts["TIR"] += 1
             db.tir_study(tir, [], actor="INSP")
             db.set_tir_status(tir, "O", actor="INSP")
+            recommendations = "Continue routine monitoring" if rng.random() < 0.3 else ""
             db.submit_tir(tir, "Visual inspection completed - demo findings",
-                          recommendations="Continue routine monitoring" if rng.random() < 0.3 else "",
-                          actor="INSP")
-            db.tir_send(tir, "PLN", "Inspection report issued - demo", has_recs=False)
+                          recommendations=recommendations, actor="INSP")
+            db.tir_send(tir, "PLN", "Inspection report issued - demo",
+                        has_recs=bool(recommendations.strip()))
     
             month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
     
