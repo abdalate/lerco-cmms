@@ -462,12 +462,34 @@ def _migrate_plans(conn):
         conn.execute("ALTER TABLE plan_items ADD COLUMN plan_code TEXT")
 
 
+def _migrate_admin(conn):
+    """Create isolated admin authentication, sessions, approvals and audit tables."""
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS admin_accounts(
+        username TEXT PRIMARY KEY, salt BLOB NOT NULL, password_hash BLOB NOT NULL,
+        iterations INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS admin_sessions(
+        token_hash TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES admin_accounts(username),
+        expires_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        revoked_at TEXT);
+    CREATE TABLE IF NOT EXISTS department_approvals(
+        dept TEXT PRIMARY KEY, approved INTEGER NOT NULL CHECK(approved >= 0),
+        updated_by TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS admin_audit_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL,
+        action TEXT NOT NULL, dept TEXT, old_value TEXT, new_value TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE INDEX IF NOT EXISTS ix_admin_audit_created ON admin_audit_log(created_at);
+    """)
+
+
 def init_db():
     conn = get_conn()
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         _migrate(conn)
         _migrate_plans(conn)
+        _migrate_admin(conn)
         conn.executescript(SCHEMA)
         conn.executescript(INDEXES)
         conn.execute("BEGIN IMMEDIATE")
@@ -1255,6 +1277,118 @@ def add_sr_material(sr_no, stock_no, description, unit, qty, returned=0):
 
 
 # ----------------------------------------------------------------------------
+# مسؤول النظام: حساب منفصل وجلسات موثقة وتدقيق للتغييرات الإدارية
+# ----------------------------------------------------------------------------
+ADMIN_PBKDF2_ITERATIONS = 310000
+ADMIN_SESSION_HOURS = 8
+
+
+def _admin_password_hash(password, salt, iterations=ADMIN_PBKDF2_ITERATIONS):
+    import hashlib
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+
+
+def create_admin_account(username, password):
+    """Bootstrap the first administrator; never stores a plain-text password."""
+    import secrets
+    username = (username or "").strip()
+    if not username or len(username) > 50:
+        raise ValueError("Enter a valid administrator username")
+    if not password or len(password) < 12:
+        raise ValueError("Administrator password must contain at least 12 characters")
+    salt = secrets.token_bytes(32)
+    digest = _admin_password_hash(password, salt)
+    with tx() as conn:
+        if conn.execute("SELECT 1 FROM admin_accounts LIMIT 1").fetchone():
+            raise ValueError("An administrator account already exists")
+        conn.execute("INSERT INTO admin_accounts(username,salt,password_hash,iterations) VALUES(?,?,?,?)",
+                     (username, salt, digest, ADMIN_PBKDF2_ITERATIONS))
+    return username
+
+
+def admin_login(username, password):
+    """Verify credentials and return a one-time session token, or None."""
+    import hashlib
+    import hmac
+    import secrets
+    username = (username or "").strip()
+    row = query("SELECT * FROM admin_accounts WHERE username=?", (username,))
+    if not row:
+        return None
+    account = row[0]
+    candidate = _admin_password_hash(password or "", account["salt"], account["iterations"])
+    if not hmac.compare_digest(candidate, account["password_hash"]):
+        return None
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires = (NOW_FN() + timedelta(hours=ADMIN_SESSION_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    with tx() as conn:
+        conn.execute("INSERT INTO admin_sessions(token_hash,username,expires_at) VALUES(?,?,?)",
+                     (token_hash, username, expires))
+    return token
+
+
+def _admin_session_row(conn, token):
+    import hashlib
+    if not token:
+        return None
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    row = conn.execute(
+        "SELECT username FROM admin_sessions WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?",
+        (token_hash, NOW_FN().strftime("%Y-%m-%d %H:%M:%S"))).fetchone()
+    return row
+
+
+def admin_session_valid(token):
+    with get_conn() as conn:
+        return bool(_admin_session_row(conn, token))
+
+
+def admin_logout(token):
+    import hashlib
+    if not token:
+        return
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with tx() as conn:
+        conn.execute("UPDATE admin_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",
+                     (NOW_FN().strftime("%Y-%m-%d %H:%M:%S"), token_hash))
+
+
+def get_department_approved(dept):
+    rows = query("SELECT approved FROM department_approvals WHERE dept=?", (dept,))
+    return int(rows[0]["approved"]) if rows else 0
+
+
+def set_department_approved(dept, approved, admin_token):
+    """Only a live database-verified admin session may change approved headcount."""
+    approved = int(approved)
+    if approved < 0:
+        raise ValueError("Approved headcount cannot be negative")
+    if dept not in [d[0] for d in DEPARTMENTS if d[3] == "MAINTENANCE"]:
+        raise ValueError("Select a valid maintenance department")
+    with tx() as conn:
+        session = _admin_session_row(conn, admin_token)
+        if not session:
+            raise PermissionError("A valid administrator session is required")
+        old = conn.execute("SELECT approved FROM department_approvals WHERE dept=?", (dept,)).fetchone()
+        old_value = int(old["approved"]) if old else 0
+        conn.execute(
+            "INSERT INTO department_approvals(dept,approved,updated_by,updated_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(dept) DO UPDATE SET approved=excluded.approved, "
+            "updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+            (dept, approved, session["username"], NOW_FN().strftime("%Y-%m-%d %H:%M:%S")))
+        if old_value != approved:
+            conn.execute(
+                "INSERT INTO admin_audit_log(username,action,dept,old_value,new_value) VALUES(?,?,?,?,?)",
+                (session["username"], "APPROVED_HEADCOUNT_CHANGED", dept, str(old_value), str(approved)))
+
+
+def admin_audit_log(limit=100):
+    return query("SELECT created_at, username, action, dept, old_value, new_value "
+                 "FROM admin_audit_log ORDER BY id DESC LIMIT ?", (int(limit),))
+
+
+# ----------------------------------------------------------------------------
 # القوى العاملة اليومية
 # ----------------------------------------------------------------------------
 MANPOWER_FIELDS = ["approved", "supervisors", "technicians", "leave_n", "absent",
@@ -1268,6 +1402,9 @@ def save_manpower(report_date, dept, **vals):
     day = _iso(report_date)
     technicians = row[MANPOWER_FIELDS.index("technicians")]
     with tx() as conn:
+        # Approved is controlled by the administrator, never by daily department entry.
+        approval = conn.execute("SELECT approved FROM department_approvals WHERE dept=?", (dept,)).fetchone()
+        row[MANPOWER_FIELDS.index("approved")] = int(approval["approved"]) if approval else 0
         used = conn.execute(
             """SELECT COALESCE(SUM(l.tech_hours), 0) AS used
                FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
