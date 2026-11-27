@@ -491,6 +491,11 @@ def init_db():
         _migrate_plans(conn)
         _migrate_admin(conn)
         conn.executescript(SCHEMA)
+        # Preserve the latest legacy Approved value when migrating existing daily manpower records.
+        if _cols(conn, "manpower_daily"):
+            conn.execute(
+                "INSERT OR IGNORE INTO department_approvals(dept,approved,updated_by) "
+                "SELECT dept, MAX(approved), 'MIGRATION' FROM manpower_daily GROUP BY dept")
         conn.executescript(INDEXES)
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1426,7 +1431,9 @@ def save_manpower(report_date, dept, **vals):
 def get_manpower(report_date, dept):
     r = query("SELECT * FROM manpower_daily WHERE report_date=? AND dept=?",
               (_iso(report_date), dept))
-    return r[0] if r else {k: 0 for k in MANPOWER_FIELDS}
+    values = dict(r[0]) if r else {k: 0 for k in MANPOWER_FIELDS}
+    values["approved"] = get_department_approved(dept)
+    return values
 
 
 # ----------------------------------------------------------------------------
