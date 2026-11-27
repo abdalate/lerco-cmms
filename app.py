@@ -819,8 +819,7 @@ def dlg_labor(job_no):
     st.markdown(f"**{job_no}**")
     with st.form(f"lab_{job_no}", border=False):
         a, b = st.columns(2)
-        wd = a.date_input("Work Date", date.today())
-        wk = b.number_input("Number of Workers", min_value=0, step=1)
+        wd = a.date_input("Work Date", date.today(), disabled=True)
         h1, h2, h3, h4 = st.columns(4)
         spv = h1.number_input("SPV", min_value=0.0, step=0.5)
         tech = h2.number_input("TECH", min_value=0.0, step=0.5)
@@ -829,7 +828,7 @@ def dlg_labor(job_no):
         note = st.text_input("Note")
         if st.form_submit_button("Record", type="primary"):
             try:
-                db.add_labor(job_no, wd, wk, spv, tech, ot, cont, note or None)
+                db.add_labor(job_no, wd, 0, spv, tech, ot, cont, note or None)
                 done("Hours recorded")
             except ValueError as e:
                 st.error(str(e))
