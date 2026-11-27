@@ -23,6 +23,10 @@ def test_admin_bootstrap_login_and_approved_audit():
 
 
 def test_department_daily_entry_cannot_change_approved():
+    try:
+        db.create_admin_account("admin", "CorrectHorseBattery12")
+    except ValueError:
+        pass  # Another test already bootstrapped the isolated test database.
     token = db.admin_login("admin", "CorrectHorseBattery12")
     assert token
     db.set_department_approved("M", 9, token)
