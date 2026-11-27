@@ -259,8 +259,11 @@ def _prod(P, y, m):
     acc = _avg([_days(r["end_date"], r["accepted_date"]) for r in db.query(
         "SELECT end_date, accepted_date FROM jobs WHERE requesting_dept=? AND status='C' AND close_reason IS NULL"
         " AND accepted_date IS NOT NULL AND " + _in("accepted_date"), (P, s, e))])
-    waiting = db.query("SELECT end_date FROM jobs WHERE requesting_dept=? AND status='C' AND accepted_date IS NULL"
-                       " AND end_date<=?", (P, asof))
+    waiting = db.query("SELECT end_date FROM jobs WHERE requesting_dept=? AND status='C' "
+                       "AND accepted_date IS NULL AND auto_closed_at IS NULL AND end_date<=?", (P, asof))
+    auto_closed = db.query("SELECT COUNT(*) n FROM jobs WHERE requesting_dept=? "
+                           "AND auto_closed_at IS NOT NULL AND substr(auto_closed_at,1,10) BETWEEN ? AND ?",
+                           (P, s, e))[0]["n"]
     oldest = max([_days(r["end_date"], asof) or 0 for r in waiting], default=0)
     items = [i for i in db.plan_due_items(P, on_date=end) if i["year"] == y and i["month"] == m]
     sent = sum(1 for i in items if i["state"] == "SENT")
@@ -281,7 +284,8 @@ def _prod(P, y, m):
                              ("Work Order issue → completion (days)", wo_cycle if wo_cycle is not None else "—"),
                              ("Completion → my acceptance (days)", acc if acc is not None else "—"),
                              ("Completed work awaiting my acceptance now", len(waiting)),
-                             ("Oldest waiting (days)", oldest)]),
+                             ("Oldest waiting (days)", oldest),
+                             ("Administratively closed without actual acceptance", auto_closed)]),
         _sec("Annual plan items due this month", [("Due", len(items)), ("Work Request sent", sent),
                                                   ("Completed", plan_done)]),
     ]
