@@ -20,6 +20,8 @@ def test_wr_to_wo_to_acceptance(today):
         db.set_job_status(wo, "O", 0, actor="M")
     db.set_stock_checked(wo, True, "M")
     db.set_job_status(wo, "O", 20, actor="M")
+    # Record four technicians before execution: 4 x 5 hours = 20 hours capacity.
+    db.save_manpower(today, "M", approved=4, technicians=4)
     db.add_labor(wo, today, 3, 8, 16, 2, 0)
     db.set_job_status(wo, "C", 100, actor="M")
     db.accept_job(wo, "REF", True)
