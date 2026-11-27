@@ -1471,9 +1471,10 @@ def _num(x):
 def page_hours(embedded=False):
     if not embedded:
         st.header("Daily Work Hours Entry")
-    c1, c2 = st.columns(2)
     dept = ROLE if ROLE in MAINT else seg("Department", MAINT, "hrs_dept", db.dept_en)
-    d = c2.date_input("Work Date", date.today())
+    # Daily entry is always recorded against the server date; users cannot select another date.
+    d = date.today()
+    st.caption(f"Work Date: {d.isoformat()} (set automatically)")
 
     with st.expander("Manpower (Headcount)", expanded=False):
         mp = db.get_manpower(d, dept)
