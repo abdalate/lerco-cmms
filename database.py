@@ -1389,6 +1389,7 @@ def _open_sr_map():
 def my_items(dept, only=None):
     """ما أصدره القسم: طلبات العمل وبطاقات العمل السريع، مع مرحلة كل منها. للطلب أكثر من مستند → المرحلة هي الأقل تقدماً.
     only=رقم طلب عمل: يُرجع ذلك الطلب وحده (بدون بطاقات JC). كل البيانات تُجلب بعدد ثابت من الاستعلامات."""
+    auto_close_unaccepted_jobs()
     par = [dept]
     cond = wcond = ""
     if only:
@@ -1448,6 +1449,7 @@ def my_items(dept, only=None):
 
 def awaiting_count(dept):
     """عدد الأعمال المكتملة بانتظار استلام قسم الإنتاج/الصيانة الطالب (للشارة العلوية) باستعلام واحد."""
+    auto_close_unaccepted_jobs()
     return query(
         "SELECT (SELECT COUNT(DISTINCT j.wr_no) FROM jobs j JOIN work_requests w"
         "  ON w.doc_no=j.wr_no WHERE w.requesting_dept=? AND w.status IN ('CONVERTED','SERVICE')"
