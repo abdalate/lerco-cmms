@@ -29,6 +29,22 @@ def test_wr_to_wo_to_acceptance(today):
         db.set_job_status(wo, "O", 10, actor="M")
 
 
+def test_labor_entry_updates_existing_job_date_instead_of_duplicate(today):
+    wr = db.create_wr(today, "REF", "M", "Repair pump", actor="REF")
+    wo = db.create_job("WO", today, "M", "Repair pump", wr_no=wr, actor="PLN",
+                       requesting_dept="REF", est_hours=8.0)
+    db.save_manpower(today, "M", technicians=4)
+    db.add_labor(wo, today, 0, 0, 10, 0, 0, "First entry")
+    db.add_labor(wo, today, 0, 2, 12, 1, 0, "Corrected entry")
+    rows = db.query("SELECT * FROM labor_log WHERE job_no=? AND work_date=?",
+                    (wo, today.isoformat()))
+    assert len(rows) == 1
+    assert rows[0]["spv_hours"] == 2
+    assert rows[0]["tech_hours"] == 12
+    assert rows[0]["ot_hours"] == 1
+    assert rows[0]["note"] == "Corrected entry"
+
+
 def test_service_request_only_from_planning(today):
     wr = db.create_wr(today, "REF", "M", "Need scaffolding", tag_no="P-102", actor="REF")
     with pytest.raises(ValueError):
