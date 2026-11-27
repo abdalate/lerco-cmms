@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS jobs(
     need_scaffold INTEGER DEFAULT 0, need_transport INTEGER DEFAULT 0,
     stock_checked INTEGER DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'P' CHECK (status IN ('P','O','C')),
-    start_date TEXT, end_date TEXT, progress INTEGER DEFAULT 0,
+    start_date TEXT, end_date TEXT, completed_at TEXT, progress INTEGER DEFAULT 0,
     remarks TEXT, legacy_no TEXT, accepted_date TEXT, accepted_by TEXT,
     auto_closed_at TEXT,
     group_no TEXT, cat_set INTEGER DEFAULT 1, plan_code TEXT,
@@ -420,7 +420,7 @@ def _migrate(conn):
                  ("op_dept", "TEXT")):
         if have and c not in have:
             conn.execute(f"ALTER TABLE equipment ADD COLUMN {c} {t}")
-    for table, extra in (("jobs", ["equipment_name", "accepted_date", "accepted_by", "auto_closed_at", "group_no",
+    for table, extra in (("jobs", ["equipment_name", "accepted_date", "accepted_by", "auto_closed_at", "completed_at", "group_no",
                                    "plan_code", "close_reason", "close_note"]),
                          ("work_requests", ["equipment_name", "location", "submitted_at",
                                             "reviewed_at", "reject_reason", "group_no", "linked_sr",
@@ -870,13 +870,17 @@ def set_job_status(doc_no, new_status, progress=None, remarks=None, on_date=None
         else:
             prog = job["progress"] or 0
         reopen = 1 if (old == "C" and new_status != "C") else 0
+        completed_at = (NOW_FN().isoformat(timespec="seconds")
+                        if new_status == "C" and old != "C" else job["completed_at"])
+        if reopen:
+            completed_at = None
         conn.execute(
-            "UPDATE jobs SET status=?, start_date=?, end_date=?, progress=?,"
+            "UPDATE jobs SET status=?, start_date=?, end_date=?, completed_at=?, progress=?,"
             " remarks=COALESCE(?,remarks),"
             " accepted_date=CASE WHEN ?=1 THEN NULL ELSE accepted_date END,"
             " accepted_by=CASE WHEN ?=1 THEN NULL ELSE accepted_by END,"
             " updated_at=datetime('now') WHERE doc_no=?",
-            (new_status, start, end, prog, remarks, reopen, reopen, doc_no))
+            (new_status, start, end, completed_at, prog, remarks, reopen, reopen, doc_no))
         who = actor or job["exec_dept"]
         if new_status != old:
             if new_status == "C":
@@ -908,7 +912,7 @@ def accept_job(doc_no, actor=None, accept=True, note=None):
         else:
             if not (note or "").strip():
                 raise ValueError("Enter a reason for returning the job to Maintenance")
-            conn.execute("UPDATE jobs SET status='O', end_date=NULL,"
+            conn.execute("UPDATE jobs SET status='O', end_date=NULL, completed_at=NULL,"
                          " progress=MIN(COALESCE(progress,0),90), accepted_date=NULL,"
                          " accepted_by=NULL, updated_at=datetime('now') WHERE doc_no=?",
                          (doc_no,))
@@ -917,14 +921,27 @@ def accept_job(doc_no, actor=None, accept=True, note=None):
 
 
 def auto_close_unaccepted_jobs(now=None):
-    """إغلاق إداري للأعمال المكتملة التي لم تؤكد الجهة الطالبة استلامها خلال المهلة."""
+    """إغلاق إداري بعد انقضاء المهلة بالساعات الفعلية منذ إكمال الصيانة.
+
+    يقبل now وقتاً افتراضياً للاختبار دون تغيير ساعة الجهاز. للأوامر القديمة
+    التي لا تملك completed_at، يُفترض اكتمالها في نهاية يوم end_date حتى لا
+    تُغلق قبل مرور المهلة كاملة بسبب غياب وقت الإكمال التاريخي.
+    """
     now = now or NOW_FN()
     target_days = float(get_setting("accept_target_days"))
-    cutoff = now.date() - timedelta(days=target_days)
     rows = query(
-        "SELECT doc_no, end_date FROM jobs WHERE status='C' AND accepted_date IS NULL "
-        "AND auto_closed_at IS NULL AND close_reason IS NULL AND end_date IS NOT NULL")
-    due = [r for r in rows if date.fromisoformat(r["end_date"]) <= cutoff]
+        "SELECT doc_no, end_date, completed_at FROM jobs WHERE status='C' "
+        "AND accepted_date IS NULL AND auto_closed_at IS NULL "
+        "AND close_reason IS NULL AND end_date IS NOT NULL")
+    due = []
+    for r in rows:
+        if r.get("completed_at"):
+            completed_at = datetime.fromisoformat(r["completed_at"])
+        else:
+            completed_at = datetime.combine(
+                date.fromisoformat(r["end_date"]), datetime.max.time())
+        if now >= completed_at + timedelta(days=target_days):
+            due.append(r)
     if not due:
         return 0
     closed_at = now.isoformat(timespec="seconds")
