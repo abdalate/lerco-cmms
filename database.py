@@ -1100,7 +1100,11 @@ def add_labor(job_no, work_date, workers=0, spv_hours=0, tech_hours=0,
         _validate_daily_tech_hours(conn, job_no, work_date, tech_hours)
         conn.execute(
             "INSERT INTO labor_log(job_no,work_date,workers,spv_hours,tech_hours,"
-            "ot_hours,cont_hours,note) VALUES(?,?,?,?,?,?,?,?)",
+            "ot_hours,cont_hours,note) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(job_no,work_date) DO UPDATE SET "
+            "spv_hours=excluded.spv_hours, tech_hours=excluded.tech_hours, "
+            "ot_hours=excluded.ot_hours, cont_hours=excluded.cont_hours, "
+            "note=excluded.note",
             (job_no, _iso(work_date), workers, spv_hours, tech_hours,
              ot_hours, cont_hours, note))
 
