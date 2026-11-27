@@ -964,9 +964,14 @@ def _job_readonly(job):
 def _job_editable(job):
     """Track and update jobs (Maintenance departments)."""
     no = job["doc_no"]
-    if job.get("accepted_date") and job.get("status") == "C":
-        st.success(f"🔒 Work is complete and finally accepted on {job['accepted_date']} "
-                   f"({job.get('accepted_by') or ''}) — closed and cannot be modified.")
+    if job.get("status") == "C" and (job.get("accepted_date") or job.get("auto_closed_at")):
+        if job.get("auto_closed_at"):
+            st.warning(f"🔒 Administratively closed on {job['auto_closed_at']} because the requesting "
+                       "department did not confirm acceptance within the allowed period. "
+                       "This is not an actual acceptance.")
+        else:
+            st.success(f"🔒 Work is complete and finally accepted on {job['accepted_date']} "
+                       f"({job.get('accepted_by') or ''}) — closed and cannot be modified.")
         _job_readonly(job)
         return
     st.markdown(f"**{no}** — "
