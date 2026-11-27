@@ -10,7 +10,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 DB_PATH = os.environ.get(
     "CMMS_DB_PATH",
@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS jobs(
     status TEXT NOT NULL DEFAULT 'P' CHECK (status IN ('P','O','C')),
     start_date TEXT, end_date TEXT, progress INTEGER DEFAULT 0,
     remarks TEXT, legacy_no TEXT, accepted_date TEXT, accepted_by TEXT,
+    auto_closed_at TEXT,
     group_no TEXT, cat_set INTEGER DEFAULT 1, plan_code TEXT,
     close_reason TEXT, close_note TEXT,   -- إغلاق بطاقة سريعة لحاجتها للتخطيط أو تلقائياً
     created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT);
@@ -419,7 +420,7 @@ def _migrate(conn):
                  ("op_dept", "TEXT")):
         if have and c not in have:
             conn.execute(f"ALTER TABLE equipment ADD COLUMN {c} {t}")
-    for table, extra in (("jobs", ["equipment_name", "accepted_date", "accepted_by", "group_no",
+    for table, extra in (("jobs", ["equipment_name", "accepted_date", "accepted_by", "auto_closed_at", "group_no",
                                    "plan_code", "close_reason", "close_note"]),
                          ("work_requests", ["equipment_name", "location", "submitted_at",
                                             "reviewed_at", "reject_reason", "group_no", "linked_sr",
@@ -682,8 +683,9 @@ def create_wr(doc_date, requesting_dept, exec_dept, description, tag_no=None,
 # ----------------------------------------------------------------------------
 def is_job_closed(doc_no):
     """أمر العمل يعتبر مقفلاً عند اكتماله وتأكيد استلامه من الجهة الطالبة."""
-    j = query("SELECT status, accepted_date FROM jobs WHERE doc_no=?", (doc_no,))
-    return bool(j and j[0]["status"] == "C" and j[0].get("accepted_date"))
+    j = query("SELECT status, accepted_date, auto_closed_at FROM jobs WHERE doc_no=?", (doc_no,))
+    return bool(j and j[0]["status"] == "C"
+                and (j[0].get("accepted_date") or j[0].get("auto_closed_at")))
 
 
 def is_sr_closed(doc_no):
@@ -713,7 +715,8 @@ def is_wr_closed(wr_no):
         tirs = query("SELECT status FROM inspection_reports WHERE wr_no=?", (wr_no,))
         if not (jobs or srs or tirs):
             return False
-        all_jobs_done = all(j["status"] == "C" and j.get("accepted_date") for j in jobs)
+        all_jobs_done = all(j["status"] == "C" and
+                            (j.get("accepted_date") or j.get("auto_closed_at")) for j in jobs)
         all_srs_done = all(s["status"] == "C" for s in srs)
         all_tirs_done = all(t["status"] == "C" for t in tirs)
         return all_jobs_done and all_srs_done and all_tirs_done
@@ -810,11 +813,11 @@ def set_job_category(doc_no, category, actor=None):
     if category not in CATEGORY:
         raise ValueError("Invalid maintenance category")
     with tx() as conn:
-        job = conn.execute("SELECT accepted_date FROM jobs WHERE doc_no=?", (doc_no,)).fetchone()
+        job = conn.execute("SELECT accepted_date, auto_closed_at FROM jobs WHERE doc_no=?", (doc_no,)).fetchone()
         if not job:
             raise ValueError("Document does not exist")
-        if job["accepted_date"]:
-            raise ValueError("Work Order is closed and accepted; its classification cannot be changed")
+        if job["accepted_date"] or job["auto_closed_at"]:
+            raise ValueError("Work Order is finally closed; its classification cannot be changed")
         conn.execute("UPDATE jobs SET category=?, cat_set=1 WHERE doc_no=?", (category, doc_no))
         log_event(conn, doc_no, "JOB_CLASSIFIED", actor or "PLN", CATEGORY[category])
 
@@ -836,8 +839,8 @@ def set_stock_checked(doc_no, flag, actor=None):
         job = conn.execute("SELECT * FROM jobs WHERE doc_no=?", (doc_no,)).fetchone()
         if not job:
             raise ValueError("Document does not exist")
-        if job["accepted_date"]:
-            raise ValueError("Work Order is closed and accepted; it cannot be modified")
+        if job["accepted_date"] or job["auto_closed_at"]:
+            raise ValueError("Work Order is finally closed; it cannot be modified")
         conn.execute("UPDATE jobs SET stock_checked=?, updated_at=datetime('now') "
                      "WHERE doc_no=?", (1 if flag else 0, doc_no))
         if flag and not job["stock_checked"]:
@@ -853,8 +856,8 @@ def set_job_status(doc_no, new_status, progress=None, remarks=None, on_date=None
         job = conn.execute("SELECT * FROM jobs WHERE doc_no=?", (doc_no,)).fetchone()
         if not job:
             raise ValueError("Document does not exist")
-        if job["status"] == "C" and job["accepted_date"]:
-            raise ValueError("Work Order is closed and finally accepted; its status cannot be changed or reopened")
+        if job["status"] == "C" and (job["accepted_date"] or job["auto_closed_at"]):
+            raise ValueError("Work Order is finally closed; its status cannot be changed or reopened")
         old = job["status"]
         if new_status == "O" and job["doc_type"] == "WO" and not job["stock_checked"]:
             raise ValueError("Execution cannot start before confirming the theoretical stock check")
@@ -892,8 +895,8 @@ def accept_job(doc_no, actor=None, accept=True, note=None):
         job = conn.execute("SELECT * FROM jobs WHERE doc_no=?", (doc_no,)).fetchone()
         if not job:
             raise ValueError("Document does not exist")
-        if job["accepted_date"]:
-            raise ValueError("This job has already been accepted and closed; it cannot be modified")
+        if job["accepted_date"] or job["auto_closed_at"]:
+            raise ValueError("This job is already finally closed; it cannot be modified")
         if job["status"] != "C":
             raise ValueError("The job is not yet complete")
         who = actor or job["requesting_dept"]
@@ -911,6 +914,34 @@ def accept_job(doc_no, actor=None, accept=True, note=None):
                          (doc_no,))
             log_event(conn, doc_no, "JOB_RETURNED", who, note.strip())
 
+
+
+def auto_close_unaccepted_jobs(now=None):
+    """إغلاق إداري للأعمال المكتملة التي لم تؤكد الجهة الطالبة استلامها خلال المهلة."""
+    now = now or NOW_FN()
+    target_days = float(get_setting("accept_target_days"))
+    cutoff = now.date() - timedelta(days=target_days)
+    rows = query(
+        "SELECT doc_no, end_date FROM jobs WHERE status='C' AND accepted_date IS NULL "
+        "AND auto_closed_at IS NULL AND close_reason IS NULL AND end_date IS NOT NULL")
+    due = [r for r in rows if date.fromisoformat(r["end_date"]) <= cutoff]
+    if not due:
+        return 0
+    closed_at = now.isoformat(timespec="seconds")
+    count = 0
+    with tx() as conn:
+        for r in due:
+            note = (f"Administratively closed by SYSTEM after {target_days:g} days "
+                    "without requester acceptance. This is not an actual acceptance.")
+            changed = conn.execute(
+                "UPDATE jobs SET auto_closed_at=?, updated_at=datetime('now') "
+                "WHERE doc_no=? AND status='C' AND accepted_date IS NULL "
+                "AND auto_closed_at IS NULL AND close_reason IS NULL",
+                (closed_at, r["doc_no"])).rowcount
+            if changed:
+                log_event(conn, r["doc_no"], "JOB_AUTO_CLOSED", "SYSTEM", note)
+                count += 1
+    return count
 
 def wr_review(doc_no, action, actor=None, reason=None):
     """مراجعة التخطيط لطلب العمل: STUDY (قيد الدراسة) أو REJECT (رفض بسبب)."""
@@ -1017,11 +1048,11 @@ def add_labor(job_no, work_date, workers=0, spv_hours=0, tech_hours=0,
         if v is None or v < 0:
             raise ValueError("Values cannot be negative")
     with tx() as conn:
-        job = conn.execute("SELECT accepted_date FROM jobs WHERE doc_no=?", (job_no,)).fetchone()
+        job = conn.execute("SELECT accepted_date, auto_closed_at FROM jobs WHERE doc_no=?", (job_no,)).fetchone()
         if not job:
             raise ValueError("Document does not exist")
-        if job["accepted_date"]:
-            raise ValueError("Work Order is closed and accepted; hours cannot be recorded")
+        if job["accepted_date"] or job["auto_closed_at"]:
+            raise ValueError("Work Order is finally closed; hours cannot be recorded")
         _validate_daily_tech_hours(conn, job_no, work_date, tech_hours)
         conn.execute(
             "INSERT INTO labor_log(job_no,work_date,workers,spv_hours,tech_hours,"
@@ -1038,11 +1069,11 @@ def set_daily_labor(job_no, work_date, workers=0, spv_hours=0, tech_hours=0,
     if any(v is None or v < 0 for v in vals):
         raise ValueError("Values cannot be negative")
     with tx() as conn:
-        job = conn.execute("SELECT accepted_date FROM jobs WHERE doc_no=?", (job_no,)).fetchone()
+        job = conn.execute("SELECT accepted_date, auto_closed_at FROM jobs WHERE doc_no=?", (job_no,)).fetchone()
         if not job:
             raise ValueError("Document does not exist")
-        if job["accepted_date"]:
-            raise ValueError("Work Order is closed and accepted; its hours cannot be modified")
+        if job["accepted_date"] or job["auto_closed_at"]:
+            raise ValueError("Work Order is finally closed; its hours cannot be modified")
         _validate_daily_tech_hours(conn, job_no, work_date, tech_hours, replacing=True)
         conn.execute("DELETE FROM labor_log WHERE job_no=? AND work_date=?",
                      (job_no, _iso(work_date)))
@@ -1056,11 +1087,11 @@ def set_daily_labor(job_no, work_date, workers=0, spv_hours=0, tech_hours=0,
 
 def add_spare(job_no, stock_no, description, unit, qty, returned=0):
     with tx() as conn:
-        job = conn.execute("SELECT accepted_date FROM jobs WHERE doc_no=?", (job_no,)).fetchone()
+        job = conn.execute("SELECT accepted_date, auto_closed_at FROM jobs WHERE doc_no=?", (job_no,)).fetchone()
         if not job:
             raise ValueError("Document does not exist")
-        if job["accepted_date"]:
-            raise ValueError("Work Order is closed and accepted; spare parts cannot be added")
+        if job["accepted_date"] or job["auto_closed_at"]:
+            raise ValueError("Work Order is finally closed; spare parts cannot be added")
         conn.execute(
             "INSERT INTO spare_parts(job_no,stock_no,description,unit,qty,returned)"
             " VALUES(?,?,?,?,?,?)",
@@ -1301,6 +1332,8 @@ def job_stage(j, open_sr=0):
         if j.get("close_reason"):
             return 6, ("Closed automatically — not completed" if j["close_reason"] == "AUTO"
                        else "Closed — needs Planning (" + JC_CLOSE_REASONS.get(j["close_reason"], "") + ")")
+        if j.get("auto_closed_at"):
+            return 6, "Closed administratively — requester did not confirm acceptance"
         if j.get("accepted_date"):
             return 6, "Closed — work accepted"
         return 5, "Execution completed — awaiting requester acceptance"
@@ -1418,9 +1451,9 @@ def awaiting_count(dept):
     return query(
         "SELECT (SELECT COUNT(DISTINCT j.wr_no) FROM jobs j JOIN work_requests w"
         "  ON w.doc_no=j.wr_no WHERE w.requesting_dept=? AND w.status IN ('CONVERTED','SERVICE')"
-        "  AND j.status='C' AND j.accepted_date IS NULL)"
+        "  AND j.status='C' AND j.accepted_date IS NULL AND j.auto_closed_at IS NULL)"
         " + (SELECT COUNT(*) FROM jobs WHERE doc_type='JC' AND requesting_dept=?"
-        "  AND status='C' AND accepted_date IS NULL) AS n", (dept, dept))[0]["n"]
+        "  AND status='C' AND accepted_date IS NULL AND auto_closed_at IS NULL) AS n", (dept, dept))[0]["n"]
 
 
 def new_wo_count(dept):
@@ -1505,7 +1538,8 @@ def maint_overview(dept, today=None):
     for r in query("SELECT job_no FROM service_requests WHERE status!='C' AND job_no IS NOT NULL"):
         sr_by_job[r["job_no"]] = sr_by_job.get(r["job_no"], 0) + 1
     groups = {"new": [], "ready": [], "waiting_sr": [], "in_progress": [], "awaiting": []}
-    for j in query("SELECT * FROM jobs WHERE exec_dept=? AND (status!='C' OR accepted_date IS NULL)"
+    for j in query("SELECT * FROM jobs WHERE exec_dept=? AND (status!='C' OR "
+                   "(accepted_date IS NULL AND auto_closed_at IS NULL))"
                    " ORDER BY doc_date, doc_no", (dept,)):
         n_sr = sr_by_job.get(j["doc_no"], 0)
         j["step"], j["stage"] = job_stage(j, n_sr)
