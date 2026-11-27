@@ -1478,11 +1478,13 @@ def page_hours(embedded=False):
 
     with st.expander("Manpower (Headcount)", expanded=False):
         mp = db.get_manpower(d, dept)
+        st.caption(f"Approved Technicians (administrator-controlled): {db.get_department_approved(dept)}")
         with st.form(f"mp_{dept}_{d}"):
             cols = st.columns(6)
+            daily_fields = [k for k in db.MANPOWER_FIELDS if k != "approved"]
             vals = {k: cols[i % 6].number_input(MP_LABELS[k], min_value=0, step=1,
                                                 value=int(mp.get(k, 0) or 0))
-                    for i, k in enumerate(db.MANPOWER_FIELDS)}
+                    for i, k in enumerate(daily_fields)}
             if st.form_submit_button("Save Manpower"):
                 try:
                     db.save_manpower(d, dept, **vals)
