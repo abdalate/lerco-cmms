@@ -886,18 +886,29 @@ def page_department_dashboard():
     dept = ROLE
     today = date.today()
     st.header(f"{db.dept_en(dept)} — Department Dashboard")
-    st.caption("Department KPIs are calculated from Work Orders and Job Cards assigned to this department.")
+    st.caption("Department KPIs include Work Orders and direct Job Cards assigned to this department.")
 
-    counts = db.query(
-        """SELECT status, COUNT(*) AS n FROM jobs
-           WHERE exec_dept=? GROUP BY status""", (dept,))
-    by_status = {r["status"]: int(r["n"] or 0) for r in counts}
-    total_jobs = sum(by_status.values())
-    open_jobs = sum(v for k, v in by_status.items() if k != "C")
-    completed = by_status.get("C", 0)
-    pending = by_status.get("P", 0)
-    in_progress = by_status.get("O", 0)
-    completion = (completed / total_jobs * 100) if total_jobs else 0.0
+    doc_counts = db.query(
+        """SELECT doc_type, status, COUNT(*) AS n FROM jobs
+           WHERE exec_dept=? AND doc_type IN ('WO','JC')
+           GROUP BY doc_type, status""", (dept,))
+    summary = {"WO": {}, "JC": {}}
+    for row in doc_counts:
+        summary.setdefault(row["doc_type"], {})[row["status"]] = int(row["n"] or 0)
+
+    def doc_total(kind):
+        return sum(summary.get(kind, {}).values())
+
+    def doc_open(kind):
+        return sum(n for status, n in summary.get(kind, {}).items() if status != "C")
+
+    wo_total, jc_total = doc_total("WO"), doc_total("JC")
+    wo_completed = summary.get("WO", {}).get("C", 0)
+    wo_pending = summary.get("WO", {}).get("P", 0)
+    wo_progress = summary.get("WO", {}).get("O", 0)
+    wo_completion = (wo_completed / wo_total * 100) if wo_total else 0.0
+    jc_completed = summary.get("JC", {}).get("C", 0)
+    jc_completion = (jc_completed / jc_total * 100) if jc_total else 0.0
 
     mp = db.get_manpower(today, dept)
     labor = db.query(
@@ -909,16 +920,38 @@ def page_department_dashboard():
            WHERE j.exec_dept=? AND l.work_date=?""", (dept, today.isoformat()))[0]
     capacity = db.get_daily_labor_capacity(today, dept)
 
-    st.subheader("Work Order Performance")
-    cards = st.columns(5)
-    cards[0].metric("Total Jobs", total_jobs)
-    cards[1].metric("Open Jobs", open_jobs)
-    cards[2].metric("Completed", completed)
-    cards[3].metric("Pending", pending)
-    cards[4].metric("In Progress", in_progress)
-    st.metric("Overall Completion Rate", f"{completion:.1f}%")
-    if total_jobs:
-        st.progress(completion / 100)
+    st.subheader("Work Orders")
+    wo_cards = st.columns(5)
+    wo_cards[0].metric("Total Work Orders", wo_total)
+    wo_cards[1].metric("Open Work Orders", doc_open("WO"))
+    wo_cards[2].metric("Completed", wo_completed)
+    wo_cards[3].metric("Pending", wo_pending)
+    wo_cards[4].metric("In Progress", wo_progress)
+    st.metric("Work Order Completion Rate", f"{wo_completion:.1f}%")
+    if wo_total:
+        st.progress(wo_completion / 100)
+
+    st.subheader("Job Cards")
+    jc_cards = st.columns(4)
+    jc_cards[0].metric("Total Job Cards", jc_total)
+    jc_cards[1].metric("Open Job Cards", doc_open("JC"))
+    jc_cards[2].metric("Completed Job Cards", jc_completed)
+    jc_cards[3].metric("Job Card Completion Rate", f"{jc_completion:.1f}%")
+
+    st.subheader("Completion Rate by Document Type")
+    chart_rows = []
+    for label, total, completed_count in (
+        ("Work Orders", wo_total, wo_completed),
+        ("Job Cards", jc_total, jc_completed),
+    ):
+        if total:
+            chart_rows.append({"Document Type": label, "Completed (%)": completed_count / total * 100,
+                               "Remaining (%)": (total - completed_count) / total * 100})
+    if chart_rows:
+        chart = pd.DataFrame(chart_rows).set_index("Document Type")
+        st.bar_chart(chart, height=240, stack="normalize")
+    else:
+        st.info("No Work Orders or Job Cards are assigned to this department yet.")
 
     st.subheader(f"Manpower & Hours — {today.isoformat()}")
     manpower_cards = st.columns(4)
@@ -935,18 +968,11 @@ def page_department_dashboard():
     hours_cards[3].metric("Contractor Hours", f'{labor["cont"]:g} h')
     hours_cards[4].metric("Total Hours Today", f'{sum(float(labor[k] or 0) for k in ("spv","tech","ot","cont")):g} h')
 
-    st.subheader("Work Order Status Distribution")
-    if counts:
-        chart = pd.DataFrame([{"Status": fmt_status(r["status"]), "Jobs": r["n"]} for r in counts])
-        st.bar_chart(chart.set_index("Status"), height=240)
-    else:
-        st.info("No work records are assigned to this department yet.")
-
     st.subheader("Open Work Orders & Job Cards")
     open_rows = db.query(
         """SELECT doc_no, doc_type, doc_date, description, status, progress, est_hours
-           FROM jobs WHERE exec_dept=? AND status!='C'
-           ORDER BY doc_date, doc_no""", (dept,))
+           FROM jobs WHERE exec_dept=? AND doc_type IN ('WO','JC') AND status!='C'
+           ORDER BY doc_type, doc_date, doc_no""", (dept,))
     show_df(open_rows, {"doc_no":"Document No.","doc_type":"Type","doc_date":"Issue Date",
                         "description":"Description","status":"Status","progress":"Progress %",
                         "est_hours":"Estimated Hours"})
