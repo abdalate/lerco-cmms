@@ -298,6 +298,12 @@ def done(msg):
     st.rerun()
 
 
+def phone_is_valid(value):
+    """Phone/contact field accepts digits only; an empty optional value is valid."""
+    value = (value or "").strip()
+    return not value or value.isdigit()
+
+
 def equip_inputs(base):
     """Equipment identification fields: Tag No. or (name + location)."""
     c1, c2, c3 = st.columns(3)
@@ -443,6 +449,9 @@ def dlg_wr(parent=None, from_tir=None, from_jc=None):
         legacy = st.text_input("Legacy Reference (optional)")
         if st.form_submit_button("Save & Submit to Planning", type="primary"):
             try:
+                if not phone_is_valid(contact):
+                    st.error("Contact / Phone must contain digits only.")
+                    return
                 no = db.create_wr(d, req, ex, desc, tag, prio, contact, legacy or None,
                                   equipment_name=ename, location=eloc, actor=ROLE,
                                   parent_job=(parent or {}).get("doc_no"),
@@ -479,6 +488,9 @@ def dlg_jc():
         desc = st.text_area("Work Description", height=80)
         if st.form_submit_button("Issue Job Card", type="primary"):
             try:
+                if not phone_is_valid(contact):
+                    st.error("Contact / Phone must contain digits only.")
+                    return
                 no = db.create_job("JC", d, ex, desc, requesting_dept=req, actor=ROLE,
                                    tag_no=tag, equipment_name=ename, cost_center=cc,
                                    location=loc, priority=prio, contact=contact,
@@ -601,6 +613,9 @@ def dlg_sr(wr=None, job_no=None):
                                format_func=lambda k: "—" if not k else _reqs[k]) if _reqs else ""
         if st.form_submit_button("Issue Service Request", type="primary"):
             try:
+                if not phone_is_valid(contact):
+                    st.error("Contact / Phone must contain digits only.")
+                    return
                 no = db.create_sr(d, stype, desc, req, job or None, tag, fd, td,
                                   est or None, None, contact, note,
                                   equipment_name=ename, location=eloc, actor=ROLE,
