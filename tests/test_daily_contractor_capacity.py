@@ -38,3 +38,16 @@ def test_manpower_cannot_be_reduced_below_recorded_contractor_hours(today):
 
     with pytest.raises(ValueError, match="contractor hours are already recorded"):
         db.save_manpower(day, "M", technicians=1, contract=1)
+
+
+def test_manpower_requires_full_approved_technician_distribution():
+    values = {"technicians": 10, "leave_n": 5, "absent": 3, "sick": 2,
+              "in_train": 4, "ex_train": 1, "shift_rest": 3, "other": 0}
+    db.validate_manpower_distribution(78, values)
+
+
+def test_manpower_rejects_unaccounted_approved_technicians():
+    values = {"technicians": 10, "leave_n": 0, "absent": 0, "sick": 0,
+              "in_train": 0, "ex_train": 0, "shift_rest": 0, "other": 0}
+    with pytest.raises(ValueError, match="account for all 78 approved technicians"):
+        db.validate_manpower_distribution(78, values)
