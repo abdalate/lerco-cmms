@@ -946,42 +946,40 @@ def page_department_dashboard():
         ("Job Cards", jc_total, jc_completed),
     ):
         if total:
-            chart_rows.append({
-                "Document Type": label,
-                "Completed (%)": completed_count / total * 100,
-                "Completed": completed_count,
-                "Total": total,
-            })
+            completed_pct = completed_count / total * 100
+            chart_rows.extend([
+                {"Document Type": label, "Status": "Completed",
+                 "Percentage": completed_pct, "Count": completed_count, "Total": total},
+                {"Document Type": label, "Status": "Remaining",
+                 "Percentage": 100 - completed_pct, "Count": total - completed_count, "Total": total},
+            ])
     if chart_rows:
         chart_data = pd.DataFrame(chart_rows)
-        background = alt.Chart(chart_data).mark_bar(
-            color="#D9E2F2", size=30, cornerRadiusEnd=5
-        ).encode(
+        bars = alt.Chart(chart_data).mark_bar(size=34).encode(
             y=alt.Y("Document Type:N", sort=["Work Orders", "Job Cards"],
                     title=None, axis=alt.Axis(labelFontSize=13, labelPadding=12)),
-            x=alt.X("Completion Scale:Q", scale=alt.Scale(domain=[0, 100]),
-                    title="Completion (%)", axis=alt.Axis(values=[0, 20, 40, 60, 80, 100],
-                                                         labelExpr="datum.value + '%'")),
-            x2=alt.value(100),
-            tooltip=["Document Type:N", "Completed:Q", "Total:Q"],
+            x=alt.X("Percentage:Q", stack="zero", scale=alt.Scale(domain=[0, 100]),
+                    title="Completion (%)",
+                    axis=alt.Axis(values=[0, 20, 40, 60, 80, 100],
+                                  labelExpr="datum.value + '%'")),
+            color=alt.Color("Status:N",
+                            scale=alt.Scale(domain=["Completed", "Remaining"],
+                                            range=["#1685D8", "#D9E2F2"]),
+                            legend=alt.Legend(title=None, orient="top")),
+            order=alt.Order("Status:N", sort="ascending"),
+            tooltip=["Document Type:N", "Status:N", "Count:Q", "Total:Q",
+                     alt.Tooltip("Percentage:Q", format=".1f", title="Percentage")],
         )
-        completed_bars = alt.Chart(chart_data).mark_bar(
-            color="#1685D8", size=30, cornerRadiusEnd=5
-        ).encode(
+        labels = alt.Chart(chart_data).mark_text(fontSize=12, fontWeight="bold").encode(
             y=alt.Y("Document Type:N", sort=["Work Orders", "Job Cards"], title=None),
-            x=alt.X("Completed (%):Q", scale=alt.Scale(domain=[0, 100]), title="Completion (%)"),
-            tooltip=["Document Type:N", alt.Tooltip("Completed (%):Q", format=".1f"),
-                     "Completed:Q", "Total:Q"],
+            x=alt.X("Percentage:Q", stack="center"),
+            detail="Status:N",
+            text=alt.Text("Percentage:Q", format=".1f"),
+            color=alt.condition(alt.datum.Status == "Completed",
+                                alt.value("#FFFFFF"), alt.value("#263238")),
         )
-        labels = alt.Chart(chart_data).mark_text(
-            align="left", dx=7, fontSize=12, fontWeight="bold", color="#FFFFFF"
-        ).encode(
-            y=alt.Y("Document Type:N", sort=["Work Orders", "Job Cards"], title=None),
-            x=alt.X("Completed (%):Q", scale=alt.Scale(domain=[0, 100])),
-            text=alt.Text("Completed (%):Q", format=".1f"),
-        )
-        st.altair_chart((background + completed_bars + labels).properties(
-            height=145
+        st.altair_chart((bars + labels).properties(
+            height=150
         ).configure_view(strokeOpacity=0).configure_axis(gridColor="#80808033"),
             use_container_width=True)
     else:
