@@ -1364,6 +1364,8 @@ def page_production_home():
     k[3].metric("Open Work Orders", int(wo or 0))
     k[4].metric("Open Service Requests", int(sr or 0))
     st.info("Open **Department Dashboard** for detailed status charts, Work Orders and Work Group progress.")
+    st.divider()
+    page_my_requests()
 
 
 def page_inspection_home():
@@ -1381,8 +1383,9 @@ def page_inspection_home():
     k[2].metric("Inspection in Progress", counts["O"])
     k[3].metric("Reports Issued", counts["C"])
     k[4].metric("Overdue Requests", len(overdue))
-    st.info("Use **Technical Inspection Reports** to process requests, **Inspection Dashboard** for detailed analysis, "
-            "and the daily/monthly reports for activity records.")
+    st.info("Use **Inspection Dashboard** for detailed analysis and the daily/monthly reports for activity records.")
+    st.divider()
+    page_tir()
 
 
 def page_inspection_dashboard():
@@ -1475,10 +1478,28 @@ def page_inspection_daily():
     if report_rows:
         df = pd.DataFrame(report_rows)
         st.dataframe(df, hide_index=True, width="stretch")
-        st.download_button("Download Daily Report (CSV)", df.to_csv(index=False).encode("utf-8-sig"),
-                           file_name=f"Inspection_Daily_{day}.csv", mime="text/csv")
+        st.download_button("Download Daily Activity (CSV)", df.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"Inspection_Daily_Activity_{day}.csv", mime="text/csv")
     else:
-        st.info("No Inspection activity was recorded for this date.")
+        st.info("No new Inspection activity was recorded for this date.")
+
+    # Daily report must also show the live open workload, even when requests were issued earlier.
+    open_rows = [r for r in rows if r["status"] != "C"]
+    st.divider()
+    st.subheader(f"Open Inspection Requests — as of {day} ({len(open_rows)})")
+    if open_rows:
+        backlog = [{
+            "No.": r["doc_no"], "Issue Date": r["doc_date"], "Work Request": r.get("wr_no") or "—",
+            "Equipment": r.get("equip") or "—", "Inspection Types": r.get("types_ar") or "—",
+            "Priority": db.PRIORITY.get(r.get("priority"), r.get("priority") or "—"),
+            "Required By": r.get("due_date") or "—", "Stage": r.get("stage_ar") or "—"
+        } for r in open_rows]
+        df_open = pd.DataFrame(backlog)
+        st.dataframe(df_open, hide_index=True, width="stretch")
+        st.download_button("Download Open Requests (CSV)", df_open.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"Inspection_Open_Requests_{day}.csv", mime="text/csv")
+    else:
+        st.success("There are no open Inspection Requests.")
 
 
 def page_production_dashboard():
@@ -1711,21 +1732,58 @@ def page_my_requests():
 # التخطيط: الرئيسية + مراجعة الطلبات
 # ----------------------------------------------------------------------------
 def page_planning_home():
-    """Planning & Programming home: concise operational indicators only."""
-    wr_new = db.query("SELECT COUNT(*) n FROM work_requests WHERE status='NEW'")[0]["n"]
-    wr_study = db.query("SELECT COUNT(*) n FROM work_requests WHERE status='STUDY'")[0]["n"]
-    wo_open = db.query("SELECT COUNT(*) n FROM jobs WHERE doc_type='WO' AND status!='C'")[0]["n"]
-    sr_open = db.query("SELECT COUNT(*) n FROM service_requests WHERE status!='C'")[0]["n"]
+    """Planning home: KPI summary followed by the operational tables previously available."""
+    ov = cdb("planning_overview")
+    today = date.today()
+    new_count = sum(1 for w in ov["new_wr"] if w["status"] == "NEW")
+    study_count = sum(1 for w in ov["new_wr"] if w["status"] == "STUDY")
     groups_open = len(cdb("list_groups", False))
 
     st.header("Planning & Programming — Home")
-    st.caption(f"Key operational indicators · {date.today().isoformat()}")
-    a, b, c, d, e = st.columns(5)
-    a.metric("New Work Requests", wr_new)
-    b.metric("Under Study", wr_study)
-    c.metric("Open Work Orders", wo_open)
-    d.metric("Open Service Requests", sr_open)
-    e.metric("Active Work Groups", groups_open)
+    st.caption(f"Key operational indicators · {today.isoformat()}")
+    c = st.columns(5)
+    c[0].metric("New Work Requests", new_count)
+    c[1].metric("Under Study", study_count)
+    c[2].metric("Open Work Orders", len(ov["open_wo"]))
+    c[3].metric("Open Service Requests", len(ov["open_sr"]))
+    c[4].metric("Active Work Groups", groups_open)
+
+    t1, t2, t3 = st.tabs([
+        f"📨 Requests Awaiting Review ({len(ov['new_wr'])})",
+        f"📋 Open Work Orders ({len(ov['open_wo'])})",
+        f"🚧 Open Service Requests ({len(ov['open_sr'])})"])
+    with t1:
+        rows = with_equip([dict(w) for w in ov["new_wr"]])
+        for w in rows:
+            w["status"] = db.WR_STATUS.get(w["status"], w["status"])
+            w["priority"] = fmt_prio(w["priority"])
+            w["age"] = (today - date.fromisoformat(w["doc_date"])).days
+            w["exec_dept"] = w["exec_dept"] or "—"
+        show_df(rows, {"doc_no": "No.", "doc_date": "Date", "requesting_dept": "Requester",
+                       "exec_dept": "Executor", "equip": "Equipment", "description": "Description",
+                       "priority": "Priority", "status": "Status", "age": "Age (days)"}, 280)
+        if new_count:
+            st.warning(f"{new_count} new request(s) — open Work Request Review to process them.")
+    with t2:
+        rows = job_rows(ov["open_wo"])
+        for r in rows:
+            r["exec_dept"] = db.dept_en(r["exec_dept"])
+        sel, detail = record_browser(rows, {"exec_dept": "Department", **JOB_COLS, "open_sr": "Open SRs"},
+                                     "home_wo", title="Open Work Order List", height=280,
+                                     progress="Progress %")
+        if sel:
+            with detail:
+                _job_readonly(db.get_job(sel["doc_no"]))
+    with t3:
+        rows = with_equip([dict(x) for x in ov["open_sr"]])
+        for x in rows:
+            x["service_type"] = db.SERVICE_TYPES.get(x["service_type"], x["service_type"])
+            x["status"] = fmt_status(x["status"])
+        show_df(rows, {"doc_no": "No.", "doc_date": "Date", "service_type": "Service",
+                       "executor": "Executing Party", "job_no": "Work Order", "wr_no": "Work Request",
+                       "equip": "Equipment", "description": "Description", "from_date": "From",
+                       "to_date": "To", "status": "Status"}, 280)
+
     st.info("For charts, department comparisons, status analysis and detailed Work Group progress, open **Overview Dashboard**.")
 
 
