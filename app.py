@@ -1378,9 +1378,14 @@ def page_production_dashboard():
     k[1].metric("New / Under Review", new_count + study_count)
     k[2].metric("Open Work Orders", wo_open)
     k[3].metric("Open Service Requests", sr_open)
-    k[4].metric("Active Work Groups", sum(
-        1 for g in cdb("list_groups", True)
-        if g.get("requesting_dept") == dept and g.get("status") != "C"))
+    all_groups_for_dept = cdb("list_groups", True)
+    dept_groups_for_kpi = [
+        g for g in all_groups_for_dept
+        if g.get("requesting_dept") == dept
+        or any(w.get("requesting_dept") == dept for w in g.get("wrs", []))
+    ]
+    k[4].metric("Active Work Groups",
+                sum(1 for g in dept_groups_for_kpi if g.get("status") != "C"))
 
     st.divider()
     left, right = st.columns(2)
@@ -1412,15 +1417,9 @@ def page_production_dashboard():
     left, right = st.columns(2)
     with left:
         st.subheader("External Service Requests")
-        sr_counts = {r["status"]: int(r["n"] or 0) for r in db.query(
-            "SELECT status, COUNT(*) n FROM service_requests WHERE requesting_dept=? GROUP BY status",
-            (dept,))}
-        if wr_nos:
-            sr_linked = db.query(
-                f"SELECT status, COUNT(*) n FROM service_requests WHERE wr_no IN ({','.join('?' for _ in wr_nos)}) GROUP BY status",
-                wr_nos)
-            for row in sr_linked:
-                sr_counts[row["status"]] = max(sr_counts.get(row["status"], 0), int(row["n"] or 0))
+        sr_counts = {}
+        for service in srs:
+            sr_counts[service["status"]] = sr_counts.get(service["status"], 0) + 1
         sr_labels = {"P": "Pending", "O": "In Progress", "C": "Completed"}
         sr_data = [{"Status": sr_labels.get(code, code), "Requests": sr_counts.get(code, 0)}
                    for code in ("P", "O", "C")]
@@ -1439,7 +1438,7 @@ def page_production_dashboard():
 
     st.divider()
     st.subheader("Work Groups & Overall Progress")
-    all_groups = cdb("list_groups", True)
+    all_groups = all_groups_for_dept
     dept_groups = []
     for group in all_groups:
         group_wrs = [w for w in group.get("wrs", [])
@@ -2883,7 +2882,7 @@ def _badges():
 
 
 if ROLE in PROD:
-    MENU = [("home", "🏠 Home", page_my_requests),
+    MENU = [("my", "📊 My Requests", page_my_requests),
             ("dash", "📈 Department Dashboard", page_production_dashboard),
             ("pm", "🗓️ Maintenance Plan", page_pm_plan),
             ("monthly", "📅 Monthly Report", page_monthly)]
