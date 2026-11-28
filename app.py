@@ -1475,9 +1475,10 @@ def page_hours(embedded=False):
     d = date.today()
     st.caption(f"Work Date: {d.isoformat()} (set automatically)")
 
+    approved_technicians = db.get_department_approved(dept)
     with st.expander("Manpower (Headcount)", expanded=False):
         mp = db.get_manpower(d, dept)
-        st.caption(f"Approved Technicians (administrator-controlled): {db.get_department_approved(dept)}")
+        st.caption(f"Approved Technicians (administrator-controlled): {approved_technicians}")
         with st.form(f"mp_{dept}_{d}"):
             cols = st.columns(6)
             daily_fields = [k for k in db.MANPOWER_FIELDS if k != "approved"]
@@ -1499,6 +1500,12 @@ def page_hours(embedded=False):
         m2.metric("Regular Hours Capacity", f'{capacity["capacity"]:g} h')
         m3.metric("Regular TECH Hours Used", f'{capacity["used"]:g} h')
         m4.metric("Remaining Capacity", f'{capacity["remaining"]:g} h')
+        if capacity["technicians"] < approved_technicians:
+            shortage = approved_technicians - capacity["technicians"]
+            st.warning(
+                f"Available technicians ({capacity['technicians']}) are below the "
+                f"approved strength ({approved_technicians}) by {shortage} technician(s)."
+            )
     else:
         st.warning("Daily manpower has not been entered. Save technician attendance before recording regular TECH hours.")
 
