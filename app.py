@@ -1347,8 +1347,6 @@ def page_production_dashboard():
     wr_total = sum(wr_counts.values())
     new_count = wr_counts.get("NEW", 0)
     study_count = wr_counts.get("STUDY", 0)
-    converted_count = wr_counts.get("CONVERTED", 0) + wr_counts.get("SERVICE", 0)
-    rejected_count = wr_counts.get("REJECTED", 0)
 
     if wr_nos:
         marks = ",".join("?" for _ in wr_nos)
@@ -1456,7 +1454,8 @@ def page_production_dashboard():
         group_rows = [{
             "Work Group": g["group_no"], "Title": g["title"],
             "Status": fmt_status(g.get("status")),
-            "Progress %": g["department_progress"],
+            "Group Overall Progress %": g.get("progress", 0),
+            "Department Progress %": g["department_progress"],
             "Work Requests": len(g["department_wrs"]),
             "Documents": len(g["department_docs"])
         } for g in dept_groups]
@@ -1464,7 +1463,14 @@ def page_production_dashboard():
         if active_groups:
             st.metric("Active Work Groups", len(active_groups))
         for group in dept_groups:
-            with st.expander(f"{group['group_no']} — {group['title']} · {group['department_progress']}%"):
+            with st.expander(
+                f"{group['group_no']} — {group['title']} · "
+                f"Department {group['department_progress']}% / Overall {group.get('progress', 0)}%"
+            ):
+                st.caption(
+                    f"Department progress: {group['department_progress']}% · "
+                    f"Overall Work Group progress: {group.get('progress', 0)}%"
+                )
                 docs = group["department_docs"]
                 if docs:
                     doc_rows = [{
