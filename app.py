@@ -859,27 +859,125 @@ def dlg_spare(job_no):
 # لوحة المتابعة
 # ----------------------------------------------------------------------------
 def page_dashboard():
-    rows = db.stats("WO")
-    tot = {"P": 0, "O": 0, "C": 0}
-    for r in rows:
-        tot[r["status"]] += r["n"]
-    wr_new = db.query("SELECT COUNT(*) n FROM work_requests WHERE status='NEW'")[0]["n"]
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("New Work Requests (WR)", wr_new)
-    c2.metric("Pending", tot["P"])
-    c3.metric("In Progress", tot["O"])
-    c4.metric("Completed", tot["C"])
-    if rows:
-        df = pd.DataFrame(rows)
-        df["Department"] = df["exec_dept"].map(db.dept_en)
-        df["Status"] = df["status"].map(fmt_status)
-        pivot = df.pivot_table(index="Department", columns="Status", values="n",
-                               aggfunc="sum", fill_value=0)
-        st.bar_chart(pivot, height=300)
-    else:
-        st.info("No Work Orders have been recorded yet.")
-    jc = db.query("SELECT COUNT(*) n FROM jobs WHERE doc_type='JC'")[0]["n"]
-    st.caption(f"Job Cards ({jc}) go directly to Maintenance and are excluded from general Planning reports.")
+    """Detailed Planning & Programming dashboard. Home remains KPI-only."""
+    today = date.today()
+    ov = cdb("planning_overview")
+    groups = cdb("list_groups", False)
+
+    wr_counts = {r["status"]: int(r["n"] or 0) for r in db.query(
+        "SELECT status, COUNT(*) n FROM work_requests GROUP BY status")}
+    wr_pending = wr_counts.get("NEW", 0)
+    wr_study = wr_counts.get("STUDY", 0)
+    wr_converted = wr_counts.get("CONVERTED", 0) + wr_counts.get("SERVICE", 0)
+    wr_rejected = wr_counts.get("REJECTED", 0)
+    wr_total = sum(wr_counts.values())
+
+    wo_rows = db.query(
+        """SELECT exec_dept, status, COUNT(*) AS n FROM jobs
+           WHERE doc_type='WO' GROUP BY exec_dept, status
+           ORDER BY exec_dept, status""")
+    wo_total = sum(int(r["n"] or 0) for r in wo_rows)
+    wo_open = sum(int(r["n"] or 0) for r in wo_rows if r["status"] != "C")
+    wo_completed = sum(int(r["n"] or 0) for r in wo_rows if r["status"] == "C")
+
+    sr_rows = db.query("SELECT status, COUNT(*) n FROM service_requests GROUP BY status")
+    sr_counts = {r["status"]: int(r["n"] or 0) for r in sr_rows}
+    sr_total = sum(sr_counts.values())
+    sr_open = sum(n for status, n in sr_counts.items() if status != "C")
+    sr_completed = sr_counts.get("C", 0)
+
+    group_total = len(groups)
+    group_in_progress = sum(1 for g in groups if g["status"] == "O")
+    group_pending = sum(1 for g in groups if g["status"] == "P")
+    group_progress = (sum(float(g.get("progress") or 0) for g in groups) / group_total
+                      if group_total else 0)
+
+    st.header("Planning & Programming — Overview Dashboard")
+    st.caption(f"Detailed operational analysis · {today.isoformat()}")
+
+    st.subheader("Work Request Pipeline")
+    m = st.columns(5)
+    for col, label, value in zip(m, ["Total Work Requests", "New / Pending Review",
+            "Under Study", "Converted to WO / SR", "Rejected"],
+            [wr_total, wr_pending, wr_study, wr_converted, wr_rejected]):
+        col.metric(label, value)
+
+    st.subheader("Execution Documents")
+    m = st.columns(4)
+    for col, label, value in zip(m, ["Total Work Orders", "Open Work Orders",
+            "Total Service Requests", "Open Service Requests"],
+            [wo_total, wo_open, sr_total, sr_open]):
+        col.metric(label, value)
+
+    st.subheader("Work Groups — Overall Progress")
+    m = st.columns(4)
+    for col, label, value in zip(m, ["Active Work Groups", "Not Started",
+            "In Progress", "Average Progress"],
+            [group_total, group_pending, group_in_progress,
+             f"{group_progress:.1f}%" if group_total else "—"]):
+        col.metric(label, value)
+
+    t1, t2, t3, t4 = st.tabs([
+        "Work Request Status", "Work Orders by Department",
+        "Service Request Status", "Work Group Progress"
+    ])
+    with t1:
+        rows = [{"Status": label, "Count": count} for label, count in [
+            ("New", wr_pending), ("Under Study", wr_study),
+            ("Converted", wr_converted), ("Rejected", wr_rejected)] if count]
+        if rows:
+            st.bar_chart(pd.DataFrame(rows).set_index("Status"), height=260)
+        else:
+            st.info("No Work Requests recorded.")
+    with t2:
+        if wo_rows:
+            df = pd.DataFrame([{"Department": db.dept_en(r["exec_dept"]),
+                "Status": fmt_status(r["status"]), "Work Orders": int(r["n"])}
+                for r in wo_rows])
+            pivot = df.pivot_table(index="Department", columns="Status",
+                values="Work Orders", aggfunc="sum", fill_value=0)
+            st.bar_chart(pivot, height=300)
+        else:
+            st.info("No Work Orders recorded.")
+        st.caption(f"Completed Work Orders: {wo_completed} · Open Work Orders: {wo_open} · "
+            f"Average response time: {ov['avg_response_h'] if ov['avg_response_h'] is not None else '—'} hours")
+    with t3:
+        rows = [{"Status": fmt_status(status), "Count": count}
+                for status, count in sorted(sr_counts.items()) if count]
+        if rows:
+            st.bar_chart(pd.DataFrame(rows).set_index("Status"), height=260)
+        else:
+            st.info("No Service Requests recorded.")
+        st.caption(f"Completed Service Requests: {sr_completed} · Open: {sr_open}")
+    with t4:
+        if groups:
+            group_rows = [{"Work Group": g["group_no"], "Work Description": g["title"],
+                "Status": fmt_status(g["status"]),
+                "Overall Progress (%)": float(g.get("progress") or 0),
+                "Work Requests": len(g.get("wrs", [])), "Documents": len(g.get("docs", []))}
+                for g in groups]
+            group_df = pd.DataFrame(group_rows).sort_values(
+                ["Overall Progress (%)", "Work Group"], ascending=[True, True])
+            st.dataframe(group_df, hide_index=True, width="stretch",
+                height=_h(len(group_df), 460),
+                column_config={"Overall Progress (%)": st.column_config.ProgressColumn(
+                    min_value=0, max_value=100, format="%.1f%%")})
+            st.caption("Overall progress is weighted by estimated document duration. "
+                "Individual document progress is available in Work Groups and the Daily Report.")
+        else:
+            st.info("No active Work Groups recorded.")
+
+    st.divider()
+    st.subheader("Current Planning Follow-up")
+    follow = st.columns(3)
+    follow[0].metric("Work Requests Awaiting Review", wr_pending + wr_study)
+    follow[1].metric("Open Work Orders", wo_open)
+    follow[2].metric("Open Service Requests", sr_open)
+    if ov["open_wo"]:
+        st.caption(f"Open Work Order backlog: {ov['backlog_hours']:g} estimated hours · "
+                   f"{ov['aged']} Work Orders older than 14 days.")
+
+
 
 
 def page_department_dashboard():
@@ -1296,149 +1394,24 @@ def page_my_requests():
 # التخطيط: الرئيسية + مراجعة الطلبات
 # ----------------------------------------------------------------------------
 def page_planning_home():
-    """Planning & Programming dashboard: WR pipeline, WO/SR execution and Work Group progress."""
-    today = date.today()
-    ov = cdb("planning_overview")
-    groups = cdb("list_groups", False)
+    """Planning & Programming home: concise operational indicators only."""
+    wr_new = db.query("SELECT COUNT(*) n FROM work_requests WHERE status='NEW'")[0]["n"]
+    wr_study = db.query("SELECT COUNT(*) n FROM work_requests WHERE status='STUDY'")[0]["n"]
+    wo_open = db.query("SELECT COUNT(*) n FROM jobs WHERE doc_type='WO' AND status!='C'")[0]["n"]
+    sr_open = db.query("SELECT COUNT(*) n FROM service_requests WHERE status!='C'")[0]["n"]
+    groups_open = len(cdb("list_groups", False))
 
-    # Work Request pipeline
-    wr_counts = {r["status"]: int(r["n"] or 0) for r in db.query(
-        "SELECT status, COUNT(*) n FROM work_requests GROUP BY status")}
-    wr_total = sum(wr_counts.values())
-    wr_pending = wr_counts.get("NEW", 0)
-    wr_study = wr_counts.get("STUDY", 0)
-    wr_converted = wr_counts.get("CONVERTED", 0) + wr_counts.get("SERVICE", 0)
-    wr_rejected = wr_counts.get("REJECTED", 0)
+    st.header("Planning & Programming — Home")
+    st.caption(f"Key operational indicators · {date.today().isoformat()}")
+    a, b, c, d, e = st.columns(5)
+    a.metric("New Work Requests", wr_new)
+    b.metric("Under Study", wr_study)
+    c.metric("Open Work Orders", wo_open)
+    d.metric("Open Service Requests", sr_open)
+    e.metric("Active Work Groups", groups_open)
+    st.info("For charts, department comparisons, status analysis and detailed Work Group progress, open **Overview Dashboard**.")
 
-    # Work Orders by maintenance department and execution status
-    wo_rows = db.query(
-        """SELECT exec_dept, status, COUNT(*) AS n FROM jobs
-           WHERE doc_type='WO' GROUP BY exec_dept, status
-           ORDER BY exec_dept, status""")
-    wo_total = sum(int(r["n"] or 0) for r in wo_rows)
-    wo_open = sum(int(r["n"] or 0) for r in wo_rows if r["status"] != "C")
-    wo_completed = sum(int(r["n"] or 0) for r in wo_rows if r["status"] == "C")
 
-    # External Service Requests
-    sr_rows = db.query("SELECT status, COUNT(*) n FROM service_requests GROUP BY status")
-    sr_counts = {r["status"]: int(r["n"] or 0) for r in sr_rows}
-    sr_total = sum(sr_counts.values())
-    sr_open = sum(n for status, n in sr_counts.items() if status != "C")
-    sr_completed = sr_counts.get("C", 0)
-
-    # Work Groups: their progress is calculated from their linked documents.
-    group_total = len(groups)
-    group_in_progress = sum(1 for g in groups if g["status"] == "O")
-    group_pending = sum(1 for g in groups if g["status"] == "P")
-    group_progress = (sum(float(g.get("progress") or 0) for g in groups) / group_total
-                      if group_total else 0)
-
-    st.header("Planning & Programming — Overview Dashboard")
-    st.caption(f"Live operational summary · {today.isoformat()}")
-
-    st.subheader("Work Request Pipeline")
-    m = st.columns(5)
-    m[0].metric("Total Work Requests", wr_total)
-    m[1].metric("New / Pending Review", wr_pending)
-    m[2].metric("Under Study", wr_study)
-    m[3].metric("Converted to WO / SR", wr_converted)
-    m[4].metric("Rejected", wr_rejected)
-
-    st.subheader("Execution Documents")
-    m = st.columns(4)
-    m[0].metric("Total Work Orders", wo_total)
-    m[1].metric("Open Work Orders", wo_open)
-    m[2].metric("Total Service Requests", sr_total)
-    m[3].metric("Open Service Requests", sr_open)
-
-    st.subheader("Work Groups — Overall Progress")
-    m = st.columns(4)
-    m[0].metric("Active Work Groups", group_total)
-    m[1].metric("Not Started", group_pending)
-    m[2].metric("In Progress", group_in_progress)
-    m[3].metric("Average Progress", f"{group_progress:.1f}%" if group_total else "—")
-
-    t1, t2, t3, t4 = st.tabs([
-        "Work Request Status", "Work Orders by Department",
-        "Service Request Status", "Work Group Progress"
-    ])
-    with t1:
-        wr_chart_rows = [
-            {"Status": label, "Count": count}
-            for label, count in [
-                ("New", wr_pending), ("Under Study", wr_study),
-                ("Converted", wr_converted), ("Rejected", wr_rejected)
-            ] if count
-        ]
-        if wr_chart_rows:
-            st.bar_chart(pd.DataFrame(wr_chart_rows).set_index("Status"), height=240)
-        else:
-            st.info("No Work Requests recorded.")
-    with t2:
-        if wo_rows:
-            df = pd.DataFrame([{
-                "Department": db.dept_en(r["exec_dept"]),
-                "Status": fmt_status(r["status"]),
-                "Work Orders": int(r["n"])
-            } for r in wo_rows])
-            pivot = df.pivot_table(index="Department", columns="Status",
-                                   values="Work Orders", aggfunc="sum", fill_value=0)
-            st.bar_chart(pivot, height=280)
-        else:
-            st.info("No Work Orders recorded.")
-        st.caption(
-            f"Completed Work Orders: {wo_completed} · "
-            f"Open Work Orders: {wo_open} · "
-            f"Average response time: {ov['avg_response_h'] if ov['avg_response_h'] is not None else '—'} hours"
-        )
-    with t3:
-        sr_chart_rows = [
-            {"Status": fmt_status(status), "Count": count}
-            for status, count in sorted(sr_counts.items()) if count
-        ]
-        if sr_chart_rows:
-            st.bar_chart(pd.DataFrame(sr_chart_rows).set_index("Status"), height=240)
-        else:
-            st.info("No Service Requests recorded.")
-        st.caption(f"Completed Service Requests: {sr_completed} · Open: {sr_open}")
-    with t4:
-        if groups:
-            group_rows = [{
-                "Work Group": g["group_no"],
-                "Work Description": g["title"],
-                "Status": fmt_status(g["status"]),
-                "Overall Progress (%)": float(g.get("progress") or 0),
-                "Work Requests": len(g.get("wrs", [])),
-                "Documents": len(g.get("docs", [])),
-            } for g in groups]
-            group_df = pd.DataFrame(group_rows).sort_values(
-                ["Overall Progress (%)", "Work Group"], ascending=[True, True])
-            st.dataframe(
-                group_df, hide_index=True, width="stretch",
-                height=_h(len(group_df), 420),
-                column_config={"Overall Progress (%)": st.column_config.ProgressColumn(
-                    min_value=0, max_value=100, format="%.1f%%"
-                )}
-            )
-            st.caption(
-                "Overall progress is calculated from the linked Work Orders, Service Requests "
-                "and Inspection documents using their estimated-duration weights. "
-                "Each document's progress remains separately available in Work Groups and the Daily Report."
-            )
-        else:
-            st.info("No active Work Groups recorded.")
-
-    st.divider()
-    st.subheader("Current Planning Follow-up")
-    follow = st.columns(3)
-    follow[0].metric("Work Requests Awaiting Review", wr_pending + wr_study)
-    follow[1].metric("Open Work Orders", wo_open)
-    follow[2].metric("Open Service Requests", sr_open)
-    if ov["open_wo"]:
-        aged = ov["aged"]
-        backlog = ov["backlog_hours"]
-        st.caption(f"Open Work Order backlog: {backlog:g} estimated hours · "
-                   f"{aged} Work Orders older than 14 days.")
 
 
 REVIEW_VIEWS = {"pending": ("Pending Review", ("NEW", "STUDY")),
