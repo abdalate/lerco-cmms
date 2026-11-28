@@ -1333,6 +1333,170 @@ def _sent_reports(wr_no):
                     dlg_wr(from_tir=t)
 
 
+def page_production_dashboard():
+    """Read-only dashboard scoped to the signed-in Production department."""
+    dept = ROLE
+    dept_name = db.dept_en(dept)
+    wrs = db.query(
+        "SELECT * FROM work_requests WHERE requesting_dept=? ORDER BY doc_date DESC, doc_no DESC",
+        (dept,))
+    wr_nos = [w["doc_no"] for w in wrs]
+    wr_counts = {r["status"]: int(r["n"] or 0) for r in db.query(
+        "SELECT status, COUNT(*) n FROM work_requests WHERE requesting_dept=? GROUP BY status",
+        (dept,))}
+    wr_total = sum(wr_counts.values())
+    new_count = wr_counts.get("NEW", 0)
+    study_count = wr_counts.get("STUDY", 0)
+    converted_count = wr_counts.get("CONVERTED", 0) + wr_counts.get("SERVICE", 0)
+    rejected_count = wr_counts.get("REJECTED", 0)
+
+    if wr_nos:
+        marks = ",".join("?" for _ in wr_nos)
+        jobs = db.query(
+            f"SELECT * FROM jobs WHERE doc_type='WO' AND (requesting_dept=? OR wr_no IN ({marks})) "
+            "ORDER BY doc_date DESC, doc_no DESC", [dept] + wr_nos)
+        srs = db.query(
+            f"SELECT * FROM service_requests WHERE (requesting_dept=? OR wr_no IN ({marks})) "
+            "ORDER BY doc_date DESC, doc_no DESC", [dept] + wr_nos)
+    else:
+        jobs = db.query(
+            "SELECT * FROM jobs WHERE doc_type='WO' AND requesting_dept=? ORDER BY doc_date DESC, doc_no DESC",
+            (dept,))
+        srs = db.query(
+            "SELECT * FROM service_requests WHERE requesting_dept=? ORDER BY doc_date DESC, doc_no DESC",
+            (dept,))
+
+    wo_open = sum(1 for j in jobs if j["status"] != "C")
+    wo_done = sum(1 for j in jobs if j["status"] == "C")
+    sr_open = sum(1 for x in srs if x["status"] != "C")
+    sr_done = sum(1 for x in srs if x["status"] == "C")
+
+    st.header(f"{dept_name} — Department Dashboard")
+    st.caption(f"Read-only operational overview for {dept_name}. Data is restricted to this requesting department.")
+    k = st.columns(5)
+    k[0].metric("Work Requests", wr_total)
+    k[1].metric("New / Under Review", new_count + study_count)
+    k[2].metric("Open Work Orders", wo_open)
+    k[3].metric("Open Service Requests", sr_open)
+    k[4].metric("Active Work Groups", sum(
+        1 for g in cdb("list_groups", True)
+        if g.get("requesting_dept") == dept and g.get("status") != "C"))
+
+    st.divider()
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Work Request Status")
+        wr_labels = {"NEW": "New", "STUDY": "Under Review", "CONVERTED": "Converted to WO",
+                     "SERVICE": "Converted to Service", "REJECTED": "Rejected"}
+        wr_data = [{"Status": wr_labels.get(code, code), "Requests": wr_counts.get(code, 0)}
+                   for code in wr_labels]
+        show_df(wr_data, height=220)
+        if wr_total:
+            st.bar_chart(pd.DataFrame(wr_data).set_index("Status"), height=220)
+    with right:
+        st.subheader("Work Orders by Maintenance Department")
+        wo_by_dept = {}
+        for j in jobs:
+            code = j.get("exec_dept") or "Other"
+            wo_by_dept.setdefault(code, {"Open": 0, "Completed": 0})
+            wo_by_dept[code]["Completed" if j["status"] == "C" else "Open"] += 1
+        wo_data = [{"Maintenance Department": db.dept_en(code),
+                    "Open": vals["Open"], "Completed": vals["Completed"]}
+                   for code, vals in sorted(wo_by_dept.items())]
+        if wo_data:
+            st.bar_chart(pd.DataFrame(wo_data).set_index("Maintenance Department"), height=280)
+        else:
+            st.info("No Work Orders have been issued for this department.")
+
+    st.divider()
+    left, right = st.columns(2)
+    with left:
+        st.subheader("External Service Requests")
+        sr_counts = {r["status"]: int(r["n"] or 0) for r in db.query(
+            "SELECT status, COUNT(*) n FROM service_requests WHERE requesting_dept=? GROUP BY status",
+            (dept,))}
+        if wr_nos:
+            sr_linked = db.query(
+                f"SELECT status, COUNT(*) n FROM service_requests WHERE wr_no IN ({','.join('?' for _ in wr_nos)}) GROUP BY status",
+                wr_nos)
+            for row in sr_linked:
+                sr_counts[row["status"]] = max(sr_counts.get(row["status"], 0), int(row["n"] or 0))
+        sr_labels = {"P": "Pending", "O": "In Progress", "C": "Completed"}
+        sr_data = [{"Status": sr_labels.get(code, code), "Requests": sr_counts.get(code, 0)}
+                   for code in ("P", "O", "C")]
+        show_df(sr_data, height=180)
+        if srs:
+            st.bar_chart(pd.DataFrame(sr_data).set_index("Status"), height=200)
+        else:
+            st.info("No external Service Requests have been recorded.")
+    with right:
+        st.subheader("Work Order Summary")
+        wo_data_status = [
+            {"Status": "Pending", "Work Orders": sum(1 for j in jobs if j["status"] == "P")},
+            {"Status": "In Progress", "Work Orders": sum(1 for j in jobs if j["status"] == "O")},
+            {"Status": "Completed", "Work Orders": wo_done}]
+        show_df(wo_data_status, height=180)
+
+    st.divider()
+    st.subheader("Work Groups & Overall Progress")
+    all_groups = cdb("list_groups", True)
+    dept_groups = []
+    for group in all_groups:
+        group_wrs = [w for w in group.get("wrs", [])
+                     if w.get("requesting_dept") == dept]
+        if group.get("requesting_dept") == dept or group_wrs:
+            docs = [doc for w in group_wrs for doc in w.get("children", [])]
+            group_view = dict(group)
+            group_view["department_wrs"] = group_wrs
+            group_view["department_docs"] = docs
+            group_view["department_progress"] = db.calc_progress(docs) if docs else 0
+            dept_groups.append(group_view)
+
+    active_groups = [g for g in dept_groups if g.get("status") != "C"]
+    if dept_groups:
+        group_rows = [{
+            "Work Group": g["group_no"], "Title": g["title"],
+            "Status": fmt_status(g.get("status")),
+            "Progress %": g["department_progress"],
+            "Work Requests": len(g["department_wrs"]),
+            "Documents": len(g["department_docs"])
+        } for g in dept_groups]
+        show_df(group_rows, height=_h(len(group_rows), 360))
+        if active_groups:
+            st.metric("Active Work Groups", len(active_groups))
+        for group in dept_groups:
+            with st.expander(f"{group['group_no']} — {group['title']} · {group['department_progress']}%"):
+                docs = group["department_docs"]
+                if docs:
+                    doc_rows = [{
+                        "Document": d.get("doc_no"), "Type": d.get("kind"),
+                        "Executing Department": d.get("party") or
+                            (db.dept_en(d.get("dept")) if d.get("dept") else "External Service"),
+                        "Status": fmt_status(d.get("status")),
+                        "Progress %": 100 if d.get("status") == "C" else (d.get("progress") or 0),
+                        "Estimated Hours": d.get("est_hours") or 0
+                    } for d in docs]
+                    show_df(doc_rows, height=_h(len(doc_rows), 260))
+                    st.progress(max(0, min(100, group["department_progress"])) / 100)
+                else:
+                    st.info("No execution documents have been issued for this Work Group yet.")
+    else:
+        st.info("No Work Groups are currently linked to this department.")
+
+    st.divider()
+    st.subheader("Recent Work Requests")
+    if wrs:
+        request_rows = [{
+            "Request": w["doc_no"], "Date": w["doc_date"],
+            "Description": w["description"],
+            "Requested Executor": db.dept_en(w["exec_dept"]),
+            "Status": db.WR_STATUS.get(w["status"], w["status"])
+        } for w in wrs[:30]]
+        show_df(request_rows, height=_h(len(request_rows), 360))
+    else:
+        st.info("No Work Requests have been submitted by this department.")
+
+
 def page_my_requests():
     items = db.my_items(ROLE)
     is_maint = ROLE in MAINT
@@ -2719,7 +2883,8 @@ def _badges():
 
 
 if ROLE in PROD:
-    MENU = [("my", "📊 My Requests", page_my_requests),
+    MENU = [("home", "🏠 Home", page_my_requests),
+            ("dash", "📈 Department Dashboard", page_production_dashboard),
             ("pm", "🗓️ Maintenance Plan", page_pm_plan),
             ("monthly", "📅 Monthly Report", page_monthly)]
 elif ROLE == "PLN":
