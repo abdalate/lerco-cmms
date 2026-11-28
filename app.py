@@ -1540,10 +1540,19 @@ def page_hours(embedded=False):
             "Workers": st.column_config.NumberColumn(min_value=0, step=1),
             "SPV": hrs, "TECH": hrs, "OV.T": hrs, "CONT": hrs,
             "Remarks": st.column_config.TextColumn()})
-    total = sum(_num(edited[c].sum()) for c in ("SPV", "TECH", "OV.T", "CONT"))
-    m1, m2 = st.columns(2)
-    m1.metric("Total Daily Hours", f"{total:g}")
-    m2.metric("Number of Jobs", len(edited))
+    # Daily labor summary by workforce category; keep supervisors and overtime separate.
+    spv_total = sum(_num(edited["SPV"].sum()),)
+    tech_total = sum(_num(edited["TECH"].sum()),)
+    ot_total = sum(_num(edited["OV.T"].sum()),)
+    cont_total = sum(_num(edited["CONT"].sum()),)
+    total = spv_total + tech_total + ot_total + cont_total
+    summary = st.columns(5)
+    summary[0].metric("Supervisor Hours", f"{spv_total:g} h")
+    summary[1].metric("Technician Hours", f"{tech_total:g} h")
+    summary[2].metric("Overtime Hours", f"{ot_total:g} h")
+    summary[3].metric("Contractor Hours", f"{cont_total:g} h")
+    summary[4].metric("Total Hours", f"{total:g} h")
+    st.caption(f"Number of jobs in this report: {len(edited)}")
 
     if st.button("Save Daily Hours", type="primary", key=f"save_{dept}_{d}"):
         saved, errors, warns = 0, [], []
@@ -1692,9 +1701,18 @@ def page_daily():
                    "progress": "Progress %", "spv": "SPV", "tech": "TECH", "ot": "OV.T",
                    "cont": "CONT", "cat_pm": "PM", "cat_cm": "CM", "cat_pd": "PD",
                    "remarks": "Remarks"})
-    total = sum((r["spv"] or 0) + (r["tech"] or 0) + (r["ot"] or 0) + (r["cont"] or 0)
-                for r in rows)
-    st.metric("Total Consumed Man-Hours", f"{total:g}")
+    spv_total = sum((r["spv"] or 0) for r in rows)
+    tech_total = sum((r["tech"] or 0) for r in rows)
+    ot_total = sum((r["ot"] or 0) for r in rows)
+    cont_total = sum((r["cont"] or 0) for r in rows)
+    total = spv_total + tech_total + ot_total + cont_total
+    st.subheader("Consumed Man-Hours Breakdown")
+    summary = st.columns(5)
+    summary[0].metric("Supervisor Hours", f"{spv_total:g} h")
+    summary[1].metric("Technician Hours", f"{tech_total:g} h")
+    summary[2].metric("Overtime Hours", f"{ot_total:g} h")
+    summary[3].metric("Contractor Hours", f"{cont_total:g} h")
+    summary[4].metric("Total Hours", f"{total:g} h")
     xlsx = report.build_daily_xlsx(dept, d, rows, mp)
     st.download_button("Download Report (Excel)", xlsx,
                        file_name=f"Daily_Report_{db.dept_en(dept)}_{d.isoformat()}.xlsx",
