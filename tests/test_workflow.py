@@ -6,6 +6,17 @@ import pytest
 import database as db
 
 
+def set_approved_headcount(dept, count):
+    """Set an explicit approved baseline so tests do not depend on test order."""
+    try:
+        db.create_admin_account("admin", "CorrectHorseBattery12")
+    except ValueError:
+        pass
+    token = db.admin_login("admin", "CorrectHorseBattery12")
+    assert token
+    db.set_department_approved(dept, count, token)
+
+
 def test_wo_requires_work_request(today):
     with pytest.raises(ValueError):
         db.create_job("WO", today, "M", "no request", actor="PLN")
@@ -20,8 +31,9 @@ def test_wr_to_wo_to_acceptance(today):
         db.set_job_status(wo, "O", 0, actor="M")
     db.set_stock_checked(wo, True, "M")
     db.set_job_status(wo, "O", 20, actor="M")
-    # Record four technicians before execution: 4 x 5 hours = 20 hours capacity.
-    db.save_manpower(today, "M", technicians=4)
+    # Four technicians are available; the remaining approved technicians are classified as Other.
+    set_approved_headcount("M", 9)
+    db.save_manpower(today, "M", technicians=4, other=5)
     db.add_labor(wo, today, 3, 8, 16, 2, 0)
     db.set_job_status(wo, "C", 100, actor="M")
     db.accept_job(wo, "REF", True)
@@ -32,10 +44,11 @@ def test_wr_to_wo_to_acceptance(today):
 def test_labor_entry_updates_existing_job_date_instead_of_duplicate(today):
     # Use a separate date so records from other workflow tests cannot affect capacity.
     work_day = today + timedelta(days=1)
+    set_approved_headcount("M", 9)
     wr = db.create_wr(work_day, "REF", "M", "Repair pump", tag_no="P-104", actor="REF")
     wo = db.create_job("WO", work_day, "M", "Repair pump", wr_no=wr, actor="PLN",
                        requesting_dept="REF", est_hours=8.0)
-    db.save_manpower(work_day, "M", technicians=4)
+    db.save_manpower(work_day, "M", technicians=4, other=5)
     db.add_labor(wo, work_day, 0, 0, 10, 0, 0, "First entry")
     db.add_labor(wo, work_day, 0, 2, 12, 1, 0, "Corrected entry")
     rows = db.query("SELECT * FROM labor_log WHERE job_no=? AND work_date=?",
