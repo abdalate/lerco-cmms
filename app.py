@@ -1486,7 +1486,7 @@ def page_inspection_daily():
     # Daily report must also show the live open workload, even when requests were issued earlier.
     open_rows = [r for r in rows if r["status"] != "C"]
     st.divider()
-    st.subheader(f"Open Inspection Requests — as of {day} ({len(open_rows)})")
+    st.subheader(f"Current Open Inspection Requests ({len(open_rows)})")
     if open_rows:
         backlog = [{
             "No.": r["doc_no"], "Issue Date": r["doc_date"], "Work Request": r.get("wr_no") or "—",
