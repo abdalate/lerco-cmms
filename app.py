@@ -881,6 +881,77 @@ def page_dashboard():
     st.caption(f"Job Cards ({jc}) go directly to Maintenance and are excluded from general Planning reports.")
 
 
+def page_department_dashboard():
+    """Detailed KPI dashboard scoped to the signed-in maintenance department role."""
+    dept = ROLE
+    today = date.today()
+    st.header(f"{db.dept_en(dept)} — Department Dashboard")
+    st.caption("Department KPIs are calculated from Work Orders and Job Cards assigned to this department.")
+
+    counts = db.query(
+        """SELECT status, COUNT(*) AS n FROM jobs
+           WHERE exec_dept=? GROUP BY status""", (dept,))
+    by_status = {r["status"]: int(r["n"] or 0) for r in counts}
+    total_jobs = sum(by_status.values())
+    open_jobs = sum(v for k, v in by_status.items() if k != "C")
+    completed = by_status.get("C", 0)
+    pending = by_status.get("P", 0)
+    in_progress = by_status.get("O", 0)
+    completion = (completed / total_jobs * 100) if total_jobs else 0.0
+
+    mp = db.get_manpower(today, dept)
+    labor = db.query(
+        """SELECT COALESCE(SUM(l.spv_hours),0) AS spv,
+                  COALESCE(SUM(l.tech_hours),0) AS tech,
+                  COALESCE(SUM(l.ot_hours),0) AS ot,
+                  COALESCE(SUM(l.cont_hours),0) AS cont
+           FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
+           WHERE j.exec_dept=? AND l.work_date=?""", (dept, today.isoformat()))[0]
+    capacity = db.get_daily_labor_capacity(today, dept)
+
+    st.subheader("Work Order Performance")
+    cards = st.columns(5)
+    cards[0].metric("Total Jobs", total_jobs)
+    cards[1].metric("Open Jobs", open_jobs)
+    cards[2].metric("Completed", completed)
+    cards[3].metric("Pending", pending)
+    cards[4].metric("In Progress", in_progress)
+    st.metric("Overall Completion Rate", f"{completion:.1f}%")
+    if total_jobs:
+        st.progress(completion / 100)
+
+    st.subheader(f"Manpower & Hours — {today.isoformat()}")
+    manpower_cards = st.columns(4)
+    manpower_cards[0].metric("Approved Technicians", mp.get("approved", 0))
+    manpower_cards[1].metric("Technicians Present", mp.get("technicians", 0))
+    manpower_cards[2].metric("Regular Hours Capacity", f'{capacity["capacity"]:g} h')
+    manpower_cards[3].metric("Regular Technician Hours Used", f'{capacity["used"]:g} h')
+    if int(mp.get("technicians", 0) or 0) < int(mp.get("approved", 0) or 0):
+        st.warning(f'Technician attendance is below approved strength by {int(mp.get("approved",0))-int(mp.get("technicians",0))} technician(s).')
+    hours_cards = st.columns(5)
+    hours_cards[0].metric("Supervisor Hours", f'{labor["spv"]:g} h')
+    hours_cards[1].metric("Technician Hours", f'{labor["tech"]:g} h')
+    hours_cards[2].metric("Overtime Hours", f'{labor["ot"]:g} h')
+    hours_cards[3].metric("Contractor Hours", f'{labor["cont"]:g} h')
+    hours_cards[4].metric("Total Hours Today", f'{sum(float(labor[k] or 0) for k in ("spv","tech","ot","cont")):g} h')
+
+    st.subheader("Work Order Status Distribution")
+    if counts:
+        chart = pd.DataFrame([{"Status": fmt_status(r["status"]), "Jobs": r["n"]} for r in counts])
+        st.bar_chart(chart.set_index("Status"), height=240)
+    else:
+        st.info("No work records are assigned to this department yet.")
+
+    st.subheader("Open Work Orders & Job Cards")
+    open_rows = db.query(
+        """SELECT doc_no, doc_type, doc_date, description, status, progress, est_hours
+           FROM jobs WHERE exec_dept=? AND status!='C'
+           ORDER BY doc_date, doc_no""", (dept,))
+    show_df(open_rows, {"doc_no":"Document No.","doc_type":"Type","doc_date":"Issue Date",
+                        "description":"Description","status":"Status","progress":"Progress %",
+                        "est_hours":"Estimated Hours"})
+
+
 # ----------------------------------------------------------------------------
 # متابعة الأعمال: عرض فقط للتخطيط , وإدخال لأقسام الصيانة
 # ----------------------------------------------------------------------------
@@ -2547,6 +2618,7 @@ elif ROLE == "INSP":
             ("monthly", "📅 Monthly Report", page_monthly)]
 else:
     MENU = [("home", "🏠 Work Orders & Today's Hours", page_maint_home),
+            ("dash", "📈 Department Dashboard", page_department_dashboard),
             ("track", "🧰 Work Order Tracking", page_tracking),
             ("my", "📨 My Requests", page_my_requests),
             ("pm", "🗓️ Maintenance Plan", page_pm_plan),
