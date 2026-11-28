@@ -30,10 +30,13 @@ def test_department_daily_entry_cannot_change_approved():
     token = db.admin_login("admin", "CorrectHorseBattery12")
     assert token
     db.set_department_approved("M", 9, token)
-    db.save_manpower(__import__("datetime").date.today(), "M", approved=999, technicians=4)
+    # All nine approved technicians must be classified; only four are available.
+    db.save_manpower(__import__("datetime").date.today(), "M",
+                     approved=999, technicians=4, absent=5)
     saved = db.get_manpower(__import__("datetime").date.today(), "M")
     assert saved["approved"] == 9
     assert saved["technicians"] == 4
+    assert saved["absent"] == 5
 
 
 def test_expired_admin_session_is_rejected():

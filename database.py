@@ -1068,6 +1068,38 @@ def _validate_daily_tech_hours(conn, job_no, work_date, new_tech_hours,
         )
 
 
+def _validate_daily_contract_hours(conn, job_no, work_date, new_cont_hours,
+                                   replacing=False):
+    """Validate contractor hours against the daily contractor headcount."""
+    job = conn.execute("SELECT exec_dept FROM jobs WHERE doc_no=?", (job_no,)).fetchone()
+    if not job:
+        raise ValueError("Document does not exist")
+    dept = job["exec_dept"]
+    day = _iso(work_date)
+    totals = conn.execute(
+        """SELECT COALESCE(SUM(l.cont_hours), 0) AS used,
+                  COALESCE(SUM(CASE WHEN l.job_no=? THEN l.cont_hours ELSE 0 END), 0) AS current_job
+           FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
+           WHERE j.exec_dept=? AND l.work_date=?""",
+        (job_no, dept, day)).fetchone()
+    used = float(totals["used"] or 0)
+    if replacing:
+        used -= float(totals["current_job"] or 0)
+    proposed = used + float(new_cont_hours or 0)
+    manpower = conn.execute(
+        "SELECT contract FROM manpower_daily WHERE report_date=? AND dept=?",
+        (day, dept)).fetchone()
+    contractors = int(manpower["contract"] or 0) if manpower else 0
+    capacity = contractors * _shift_hours_per_day()
+    if proposed > capacity:
+        raise ValueError(
+            f"Contractor hours exceed daily capacity for {dept} on {day}: "
+            f"{proposed:g} h recorded / {capacity:g} h available "
+            f"({contractors} contractors × {_shift_hours_per_day():g} h). "
+            "Save the contractor attendance before recording contractor hours."
+        )
+
+
 def get_daily_labor_capacity(report_date, dept):
     """ملخص طاقة الفنيين اليومية والساعات العادية المسجلة للقسم."""
     day = _iso(report_date)
@@ -1098,6 +1130,7 @@ def add_labor(job_no, work_date, workers=0, spv_hours=0, tech_hours=0,
         if job["accepted_date"] or job["auto_closed_at"]:
             raise ValueError("Work Order is finally closed; hours cannot be recorded")
         _validate_daily_tech_hours(conn, job_no, work_date, tech_hours, replacing=True)
+        _validate_daily_contract_hours(conn, job_no, work_date, cont_hours, replacing=True)
         # The legacy database has a non-unique index on (job_no, work_date),
         # so replace matching daily rows explicitly instead of relying on ON CONFLICT.
         day = _iso(work_date)
@@ -1405,6 +1438,24 @@ MANPOWER_FIELDS = ["approved", "supervisors", "technicians", "leave_n", "absent"
                    "sick", "in_train", "ex_train", "shift_rest", "other", "contract"]
 
 
+TECHNICIAN_DISTRIBUTION_FIELDS = ("technicians", "leave_n", "absent", "sick",
+                                  "in_train", "ex_train", "shift_rest", "other")
+
+
+def validate_manpower_distribution(approved, vals):
+    """Require every approved technician to be accounted for in the daily attendance."""
+    accounted = sum(int(vals.get(field, 0) or 0) for field in TECHNICIAN_DISTRIBUTION_FIELDS)
+    approved = int(approved or 0)
+    if accounted != approved:
+        difference = approved - accounted
+        raise ValueError(
+            f"Cannot save manpower: account for all {approved} approved technicians. "
+            f"Currently classified: {accounted}; difference: {difference}. "
+            "Adjust Available Technicians, Leave, Absent, Sick, Internal Training, "
+            "External Training, Shift Rest, or Other until the total matches."
+        )
+
+
 def save_manpower(report_date, dept, **vals):
     row = [int(vals.get(k, 0) or 0) for k in MANPOWER_FIELDS]
     if any(v < 0 for v in row):
@@ -1415,6 +1466,7 @@ def save_manpower(report_date, dept, **vals):
         # Approved is controlled by the administrator, never by daily department entry.
         approval = conn.execute("SELECT approved FROM department_approvals WHERE dept=?", (dept,)).fetchone()
         row[MANPOWER_FIELDS.index("approved")] = int(approval["approved"]) if approval else 0
+        validate_manpower_distribution(row[MANPOWER_FIELDS.index("approved")], dict(zip(MANPOWER_FIELDS, row)))
         used = conn.execute(
             """SELECT COALESCE(SUM(l.tech_hours), 0) AS used
                FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
@@ -1426,6 +1478,18 @@ def save_manpower(report_date, dept, **vals):
                 f"Cannot save manpower: {recorded:g} regular technician hours are already "
                 f"recorded, but {technicians} technicians provide only {capacity:g} hours "
                 f"of daily capacity."
+            )
+        contract_used = conn.execute(
+            """SELECT COALESCE(SUM(l.cont_hours), 0) AS used
+               FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
+               WHERE j.exec_dept=? AND l.work_date=?""", (dept, day)).fetchone()
+        contractor_hours = float(contract_used["used"] or 0)
+        contractor_capacity = row[MANPOWER_FIELDS.index("contract")] * _shift_hours_per_day()
+        if contractor_hours > contractor_capacity:
+            raise ValueError(
+                f"Cannot save manpower: {contractor_hours:g} contractor hours are already "
+                f"recorded, but {row[MANPOWER_FIELDS.index('contract')]} contractors provide "
+                f"only {contractor_capacity:g} hours of daily capacity."
             )
         conn.execute(
             f"INSERT OR REPLACE INTO manpower_daily(report_date,dept,"

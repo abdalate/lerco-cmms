@@ -5,6 +5,7 @@ Run: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 """
 from datetime import date
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -298,13 +299,10 @@ def done(msg):
     st.rerun()
 
 
-def pick_equipment(key):
-    """Select registered equipment (optional) to populate fields automatically; called outside the form."""
-    items = {str(e["id"]): e for e in db.list_equipment()}
-    sel = st.selectbox("Select registered equipment (optional)", [""] + list(items), key=f"pick_{key}",
-                       format_func=lambda x: "— Manual entry / new equipment —" if not x
-                       else items[x]["label"])
-    return items.get(sel, {})
+def phone_is_valid(value):
+    """Phone/contact field accepts digits only; an empty optional value is valid."""
+    value = (value or "").strip()
+    return not value or value.isdigit()
 
 
 def equip_inputs(base):
@@ -423,8 +421,8 @@ def dlg_wr(parent=None, from_tir=None, from_jc=None):
     else:
         st.caption("For equipment maintenance or assistance. Planning issues a Work Order and/or Service Request "
                    "(crane, scaffolding, transport, contractor, etc.) as required.")
-        eq = pick_equipment("wr")
-        base = eq
+        eq = {}
+        base = {}
     with st.form(f"wr_form_{eq.get('id', 0)}_{(parent or {}).get('doc_no', '')}"
                  f"_{(from_tir or {}).get('doc_no', '')}_{(from_jc or {}).get('doc_no', '')}", border=False):
         c1, c2, c3 = st.columns(3)
@@ -435,7 +433,6 @@ def dlg_wr(parent=None, from_tir=None, from_jc=None):
         else:
             req = c2.selectbox("Requesting Department", PROD + ["PLN", "INSP"], format_func=db.dept_label)
         contact = c3.text_input("Contact / Phone")
-        need = st.text_input("Requested")
         ex = seg("Executing Party", [""] + [m for m in MAINT if m != ROLE], "wr_ex",
                  lambda x: "Not specified" if not x else db.dept_label(x))
         prio = seg("Priority", list(db.PRIORITY), "wr_prio", fmt_prio)
@@ -453,9 +450,12 @@ def dlg_wr(parent=None, from_tir=None, from_jc=None):
         legacy = st.text_input("Legacy Reference (optional)")
         if st.form_submit_button("Save & Submit to Planning", type="primary"):
             try:
+                if not phone_is_valid(contact):
+                    st.error("Contact / Phone must contain digits only.")
+                    return
                 no = db.create_wr(d, req, ex, desc, tag, prio, contact, legacy or None,
                                   equipment_name=ename, location=eloc, actor=ROLE,
-                                  parent_job=(parent or {}).get("doc_no"), need=need or None,
+                                  parent_job=(parent or {}).get("doc_no"),
                                   cost_center=cc, materials=mats, special_equip=spec)
                 if from_jc:
                     db.link_wr_to_jc(no, from_jc["doc_no"], ROLE)
@@ -470,7 +470,7 @@ def dlg_wr(parent=None, from_tir=None, from_jc=None):
 def dlg_jc():
     st.caption("For minor jobs completed on the same day without complex spare parts or contractors. "
                "It goes directly to Maintenance, bypasses Planning, and is excluded from Planning reports.")
-    eq = pick_equipment("jc")
+    eq = {}
     with st.form(f"jc_form_{eq.get('id', 0)}", border=False):
         c1, c2, c3 = st.columns(3)
         d = c1.date_input("Issue Date", value=date.today(), disabled=True)
@@ -489,6 +489,9 @@ def dlg_jc():
         desc = st.text_area("Work Description", height=80)
         if st.form_submit_button("Issue Job Card", type="primary"):
             try:
+                if not phone_is_valid(contact):
+                    st.error("Contact / Phone must contain digits only.")
+                    return
                 no = db.create_job("JC", d, ex, desc, requesting_dept=req, actor=ROLE,
                                    tag_no=tag, equipment_name=ename, cost_center=cc,
                                    location=loc, priority=prio, contact=contact,
@@ -520,9 +523,8 @@ def dlg_wo(wr=None):
         d = c1.date_input("Issue Date", value=date.today(), disabled=True)
         est = c2.number_input("Estimated Duration (hours)", min_value=0.0, step=1.0)
         cc = c3.text_input("Cost Center", value=wr.get("cost_center") or "")
-        req_opts = PROD + MAINT + ["PLN", "INSP"]
-        req = seg("Requesting Department", req_opts, "wo_req", db.dept_en,
-                  default=wr.get("requesting_dept"))
+        req = wr.get("requesting_dept")
+        st.markdown(f"**Requesting Department:** {db.dept_label(req)}")
         ex = seg("Executing Party", MAINT, "wo_ex", db.dept_label, default=wr.get("exec_dept"))
         cat = seg("Maintenance Category (set by Planning)", list(db.CATEGORY), "wo_cat", fmt_cat,
                   default="PM" if "Scheduled" in (wr.get("need") or "") else "CM")
@@ -594,8 +596,8 @@ def dlg_sr(wr=None, job_no=None):
             job = c3.selectbox("Related Work Order (optional)", [""] + jobs,
                                index=(jobs.index(job_no) + 1) if job_no in jobs else 0,
                                format_func=lambda x: "—" if not x else x)
-        req_opts = MAINT + PROD
-        req = seg("Requesting Department", req_opts, "sr_req", db.dept_en, default=wr.get("requesting_dept"))
+        req = wr.get("requesting_dept")
+        st.markdown(f"**Requesting Department:** {db.dept_label(req)}")
         stype = seg("Service Type", list(db.SERVICE_TYPES), "sr_type", lambda x: db.SERVICE_TYPES[x],
                     default="OTHER" if pinfo and "OTH" in pinfo["depts"] else None)
         tag, ename, eloc = equip_inputs({"tag_no": wr.get("tag_no"),
@@ -612,6 +614,9 @@ def dlg_sr(wr=None, job_no=None):
                                format_func=lambda k: "—" if not k else _reqs[k]) if _reqs else ""
         if st.form_submit_button("Issue Service Request", type="primary"):
             try:
+                if not phone_is_valid(contact):
+                    st.error("Contact / Phone must contain digits only.")
+                    return
                 no = db.create_sr(d, stype, desc, req, job or None, tag, fd, td,
                                   est or None, None, contact, note,
                                   equipment_name=ename, location=eloc, actor=ROLE,
@@ -875,6 +880,134 @@ def page_dashboard():
         st.info("No Work Orders have been recorded yet.")
     jc = db.query("SELECT COUNT(*) n FROM jobs WHERE doc_type='JC'")[0]["n"]
     st.caption(f"Job Cards ({jc}) go directly to Maintenance and are excluded from general Planning reports.")
+
+
+def page_department_dashboard():
+    """Detailed KPI dashboard scoped to the signed-in maintenance department role."""
+    dept = ROLE
+    today = date.today()
+    st.header(f"{db.dept_en(dept)} — Department Dashboard")
+    st.caption("Department KPIs include Work Orders and direct Job Cards assigned to this department.")
+
+    doc_counts = db.query(
+        """SELECT doc_type, status, COUNT(*) AS n FROM jobs
+           WHERE exec_dept=? AND doc_type IN ('WO','JC')
+           GROUP BY doc_type, status""", (dept,))
+    summary = {"WO": {}, "JC": {}}
+    for row in doc_counts:
+        summary.setdefault(row["doc_type"], {})[row["status"]] = int(row["n"] or 0)
+
+    def doc_total(kind):
+        return sum(summary.get(kind, {}).values())
+
+    def doc_open(kind):
+        return sum(n for status, n in summary.get(kind, {}).items() if status != "C")
+
+    wo_total, jc_total = doc_total("WO"), doc_total("JC")
+    wo_completed = summary.get("WO", {}).get("C", 0)
+    wo_pending = summary.get("WO", {}).get("P", 0)
+    wo_progress = summary.get("WO", {}).get("O", 0)
+    wo_completion = (wo_completed / wo_total * 100) if wo_total else 0.0
+    jc_completed = summary.get("JC", {}).get("C", 0)
+    jc_completion = (jc_completed / jc_total * 100) if jc_total else 0.0
+
+    mp = db.get_manpower(today, dept)
+    labor = db.query(
+        """SELECT COALESCE(SUM(l.spv_hours),0) AS spv,
+                  COALESCE(SUM(l.tech_hours),0) AS tech,
+                  COALESCE(SUM(l.ot_hours),0) AS ot,
+                  COALESCE(SUM(l.cont_hours),0) AS cont
+           FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
+           WHERE j.exec_dept=? AND l.work_date=?""", (dept, today.isoformat()))[0]
+    capacity = db.get_daily_labor_capacity(today, dept)
+
+    st.subheader("Work Orders")
+    wo_cards = st.columns(5)
+    wo_cards[0].metric("Total Work Orders", wo_total)
+    wo_cards[1].metric("Open Work Orders", doc_open("WO"))
+    wo_cards[2].metric("Completed", wo_completed)
+    wo_cards[3].metric("Pending", wo_pending)
+    wo_cards[4].metric("In Progress", wo_progress)
+    st.metric("Work Order Completion Rate", f"{wo_completion:.1f}%")
+    if wo_total:
+        st.progress(wo_completion / 100)
+
+    st.subheader("Job Cards")
+    jc_cards = st.columns(4)
+    jc_cards[0].metric("Total Job Cards", jc_total)
+    jc_cards[1].metric("Open Job Cards", doc_open("JC"))
+    jc_cards[2].metric("Completed Job Cards", jc_completed)
+    jc_cards[3].metric("Job Card Completion Rate", f"{jc_completion:.1f}%")
+
+    st.subheader("Completion Rate by Document Type")
+    chart_rows = []
+    for label, total, completed_count in (
+        ("Work Orders", wo_total, wo_completed),
+        ("Job Cards", jc_total, jc_completed),
+    ):
+        if total:
+            completed_pct = completed_count / total * 100
+            chart_rows.extend([
+                {"Document Type": label, "Status": "Completed",
+                 "Percentage": completed_pct, "Count": completed_count, "Total": total},
+                {"Document Type": label, "Status": "Remaining",
+                 "Percentage": 100 - completed_pct, "Count": total - completed_count, "Total": total},
+            ])
+    if chart_rows:
+        chart_data = pd.DataFrame(chart_rows)
+        bars = alt.Chart(chart_data).mark_bar(size=34).encode(
+            y=alt.Y("Document Type:N", sort=["Work Orders", "Job Cards"],
+                    title=None, axis=alt.Axis(labelFontSize=13, labelPadding=12)),
+            x=alt.X("Percentage:Q", stack="zero", scale=alt.Scale(domain=[0, 100]),
+                    title="Completion (%)",
+                    axis=alt.Axis(values=[0, 20, 40, 60, 80, 100],
+                                  labelExpr="datum.value + '%'")),
+            color=alt.Color("Status:N",
+                            scale=alt.Scale(domain=["Completed", "Remaining"],
+                                            range=["#1685D8", "#D9E2F2"]),
+                            legend=alt.Legend(title=None, orient="top")),
+            order=alt.Order("Status:N", sort="ascending"),
+            tooltip=["Document Type:N", "Status:N", "Count:Q", "Total:Q",
+                     alt.Tooltip("Percentage:Q", format=".1f", title="Percentage")],
+        )
+        labels = alt.Chart(chart_data).mark_text(fontSize=12, fontWeight="bold").encode(
+            y=alt.Y("Document Type:N", sort=["Work Orders", "Job Cards"], title=None),
+            x=alt.X("Percentage:Q", stack="center"),
+            detail="Status:N",
+            text=alt.Text("Percentage:Q", format=".1f"),
+            color=alt.condition(alt.datum.Status == "Completed",
+                                alt.value("#FFFFFF"), alt.value("#263238")),
+        )
+        st.altair_chart((bars + labels).properties(
+            height=150
+        ).configure_view(strokeOpacity=0).configure_axis(gridColor="#80808033"),
+            use_container_width=True)
+    else:
+        st.info("No Work Orders or Job Cards are assigned to this department yet.")
+
+    st.subheader(f"Manpower & Hours — {today.isoformat()}")
+    manpower_cards = st.columns(4)
+    manpower_cards[0].metric("Approved Technicians", mp.get("approved", 0))
+    manpower_cards[1].metric("Technicians Present", mp.get("technicians", 0))
+    manpower_cards[2].metric("Regular Hours Capacity", f'{capacity["capacity"]:g} h')
+    manpower_cards[3].metric("Regular Technician Hours Used", f'{capacity["used"]:g} h')
+    if int(mp.get("technicians", 0) or 0) < int(mp.get("approved", 0) or 0):
+        st.warning(f'Technician attendance is below approved strength by {int(mp.get("approved",0))-int(mp.get("technicians",0))} technician(s).')
+    hours_cards = st.columns(5)
+    hours_cards[0].metric("Supervisor Hours", f'{labor["spv"]:g} h')
+    hours_cards[1].metric("Technician Hours", f'{labor["tech"]:g} h')
+    hours_cards[2].metric("Overtime Hours", f'{labor["ot"]:g} h')
+    hours_cards[3].metric("Contractor Hours", f'{labor["cont"]:g} h')
+    hours_cards[4].metric("Total Hours Today", f'{sum(float(labor[k] or 0) for k in ("spv","tech","ot","cont")):g} h')
+
+    st.subheader("Open Work Orders & Job Cards")
+    open_rows = db.query(
+        """SELECT doc_no, doc_type, doc_date, description, status, progress, est_hours
+           FROM jobs WHERE exec_dept=? AND doc_type IN ('WO','JC') AND status!='C'
+           ORDER BY doc_type, doc_date, doc_no""", (dept,))
+    show_df(open_rows, {"doc_no":"Document No.","doc_type":"Type","doc_date":"Issue Date",
+                        "description":"Description","status":"Status","progress":"Progress %",
+                        "est_hours":"Estimated Hours"})
 
 
 # ----------------------------------------------------------------------------
@@ -1412,6 +1545,12 @@ def page_wr_review():
 # ----------------------------------------------------------------------------
 def page_maint_home():
     g = db.maint_overview(ROLE)
+    all_open = sum(len(g[k]) for k in ("new", "ready", "waiting_sr", "in_progress", "awaiting"))
+    summary = st.columns(4)
+    summary[0].metric("Open Work Orders", all_open)
+    summary[1].metric("Awaiting Inspection / Stock Check", len(g["new"]))
+    summary[2].metric("Ready / In Progress", len(g["ready"]) + len(g["in_progress"]))
+    summary[3].metric("Awaiting Requester Acceptance", len(g["awaiting"]))
     t1, t2 = st.tabs(["📋 Work Orders", "⏱️ Daily Hours Entry"])
     with t1:
         names = {"all": "All", "new": "New (Awaiting Inspection)", "ready": "Ready for Execution",
@@ -1475,9 +1614,10 @@ def page_hours(embedded=False):
     d = date.today()
     st.caption(f"Work Date: {d.isoformat()} (set automatically)")
 
+    approved_technicians = db.get_department_approved(dept)
     with st.expander("Manpower (Headcount)", expanded=False):
         mp = db.get_manpower(d, dept)
-        st.caption(f"Approved Technicians (administrator-controlled): {db.get_department_approved(dept)}")
+        st.caption(f"Approved Technicians (administrator-controlled): {approved_technicians}")
         with st.form(f"mp_{dept}_{d}"):
             cols = st.columns(6)
             daily_fields = [k for k in db.MANPOWER_FIELDS if k != "approved"]
@@ -1499,6 +1639,12 @@ def page_hours(embedded=False):
         m2.metric("Regular Hours Capacity", f'{capacity["capacity"]:g} h')
         m3.metric("Regular TECH Hours Used", f'{capacity["used"]:g} h')
         m4.metric("Remaining Capacity", f'{capacity["remaining"]:g} h')
+        if capacity["technicians"] < approved_technicians:
+            shortage = approved_technicians - capacity["technicians"]
+            st.warning(
+                f"Available technicians ({capacity['technicians']}) are below the "
+                f"approved strength ({approved_technicians}) by {shortage} technician(s)."
+            )
     else:
         st.warning("Daily manpower has not been entered. Save technician attendance before recording regular TECH hours.")
 
@@ -1529,10 +1675,19 @@ def page_hours(embedded=False):
             "Workers": st.column_config.NumberColumn(min_value=0, step=1),
             "SPV": hrs, "TECH": hrs, "OV.T": hrs, "CONT": hrs,
             "Remarks": st.column_config.TextColumn()})
-    total = sum(_num(edited[c].sum()) for c in ("SPV", "TECH", "OV.T", "CONT"))
-    m1, m2 = st.columns(2)
-    m1.metric("Total Daily Hours", f"{total:g}")
-    m2.metric("Number of Jobs", len(edited))
+    # Daily labor summary by workforce category; keep supervisors and overtime separate.
+    spv_total = _num(edited["SPV"].sum())
+    tech_total = _num(edited["TECH"].sum())
+    ot_total = _num(edited["OV.T"].sum())
+    cont_total = _num(edited["CONT"].sum())
+    total = spv_total + tech_total + ot_total + cont_total
+    summary = st.columns(5)
+    summary[0].metric("Supervisor Hours", f"{spv_total:g} h")
+    summary[1].metric("Technician Hours", f"{tech_total:g} h")
+    summary[2].metric("Overtime Hours", f"{ot_total:g} h")
+    summary[3].metric("Contractor Hours", f"{cont_total:g} h")
+    summary[4].metric("Total Hours", f"{total:g} h")
+    st.caption(f"Number of jobs in this report: {len(edited)}")
 
     if st.button("Save Daily Hours", type="primary", key=f"save_{dept}_{d}"):
         saved, errors, warns = 0, [], []
@@ -1681,9 +1836,18 @@ def page_daily():
                    "progress": "Progress %", "spv": "SPV", "tech": "TECH", "ot": "OV.T",
                    "cont": "CONT", "cat_pm": "PM", "cat_cm": "CM", "cat_pd": "PD",
                    "remarks": "Remarks"})
-    total = sum((r["spv"] or 0) + (r["tech"] or 0) + (r["ot"] or 0) + (r["cont"] or 0)
-                for r in rows)
-    st.metric("Total Consumed Man-Hours", f"{total:g}")
+    spv_total = sum((r["spv"] or 0) for r in rows)
+    tech_total = sum((r["tech"] or 0) for r in rows)
+    ot_total = sum((r["ot"] or 0) for r in rows)
+    cont_total = sum((r["cont"] or 0) for r in rows)
+    total = spv_total + tech_total + ot_total + cont_total
+    st.subheader("Consumed Man-Hours Breakdown")
+    summary = st.columns(5)
+    summary[0].metric("Supervisor Hours", f"{spv_total:g} h")
+    summary[1].metric("Technician Hours", f"{tech_total:g} h")
+    summary[2].metric("Overtime Hours", f"{ot_total:g} h")
+    summary[3].metric("Contractor Hours", f"{cont_total:g} h")
+    summary[4].metric("Total Hours", f"{total:g} h")
     xlsx = report.build_daily_xlsx(dept, d, rows, mp)
     st.download_button("Download Report (Excel)", xlsx,
                        file_name=f"Daily_Report_{db.dept_en(dept)}_{d.isoformat()}.xlsx",
@@ -2518,6 +2682,7 @@ elif ROLE == "INSP":
             ("monthly", "📅 Monthly Report", page_monthly)]
 else:
     MENU = [("home", "🏠 Work Orders & Today's Hours", page_maint_home),
+            ("dash", "📈 Department Dashboard", page_department_dashboard),
             ("track", "🧰 Work Order Tracking", page_tracking),
             ("my", "📨 My Requests", page_my_requests),
             ("pm", "🗓️ Maintenance Plan", page_pm_plan),
