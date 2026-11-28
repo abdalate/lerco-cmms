@@ -1333,6 +1333,154 @@ def _sent_reports(wr_no):
                     dlg_wr(from_tir=t)
 
 
+def page_production_home():
+    """Concise home indicators for the selected Production department."""
+    dept = ROLE
+    counts = {r["status"]: int(r["n"] or 0) for r in db.query(
+        "SELECT status, COUNT(*) n FROM work_requests WHERE requesting_dept=? GROUP BY status",
+        (dept,))}
+    wr_nos = [r["doc_no"] for r in db.query(
+        "SELECT doc_no FROM work_requests WHERE requesting_dept=?", (dept,))]
+    if wr_nos:
+        marks = ",".join("?" for _ in wr_nos)
+        wo = db.query(
+            f"SELECT COUNT(*) n FROM jobs WHERE doc_type='WO' AND status!='C' "
+            f"AND (requesting_dept=? OR wr_no IN ({marks}))", [dept] + wr_nos)[0]["n"]
+        sr = db.query(
+            f"SELECT COUNT(*) n FROM service_requests WHERE status!='C' "
+            f"AND (requesting_dept=? OR wr_no IN ({marks}))", [dept] + wr_nos)[0]["n"]
+    else:
+        wo = db.query("SELECT COUNT(*) n FROM jobs WHERE doc_type='WO' AND status!='C' "
+                      "AND requesting_dept=?", (dept,))[0]["n"]
+        sr = db.query("SELECT COUNT(*) n FROM service_requests WHERE status!='C' "
+                      "AND requesting_dept=?", (dept,))[0]["n"]
+
+    st.header(f"{db.dept_en(dept)} — Home")
+    st.caption(f"Key operational indicators · {date.today().isoformat()}")
+    k = st.columns(5)
+    k[0].metric("Total Work Requests", sum(counts.values()))
+    k[1].metric("New Requests", counts.get("NEW", 0))
+    k[2].metric("Under Review", counts.get("STUDY", 0))
+    k[3].metric("Open Work Orders", int(wo or 0))
+    k[4].metric("Open Service Requests", int(sr or 0))
+    st.info("Open **Department Dashboard** for detailed status charts, Work Orders and Work Group progress.")
+
+
+def page_inspection_home():
+    """Concise operational indicators for the Inspection department."""
+    rows = db.list_tirs()
+    today = date.today().isoformat()
+    open_rows = [r for r in rows if r["status"] != "C"]
+    overdue = [r for r in open_rows if r.get("due_date") and r["due_date"] < today]
+    counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("P", "O", "C")}
+    st.header("Technical Inspection — Home")
+    st.caption(f"Key operational indicators · {today}")
+    k = st.columns(5)
+    k[0].metric("Total Inspection Requests", len(rows))
+    k[1].metric("Awaiting Inspection", counts["P"])
+    k[2].metric("Inspection in Progress", counts["O"])
+    k[3].metric("Reports Issued", counts["C"])
+    k[4].metric("Overdue Requests", len(overdue))
+    st.info("Use **Technical Inspection Reports** to process requests, **Inspection Dashboard** for detailed analysis, "
+            "and the daily/monthly reports for activity records.")
+
+
+def page_inspection_dashboard():
+    """Read-only overview of Inspection requests, stages, and preparation requirements."""
+    rows = db.list_tirs()
+    today = date.today().isoformat()
+    open_rows = [r for r in rows if r["status"] != "C"]
+    overdue = [r for r in open_rows if r.get("due_date") and r["due_date"] < today]
+    stages = {}
+    types = {}
+    req_total = req_waiting = req_done = 0
+    for r in rows:
+        stages[r["stage_ar"]] = stages.get(r["stage_ar"], 0) + 1
+        for typ in r.get("types", []):
+            label = db.INSP_TYPES.get(typ, typ)
+            types[label] = types.get(label, 0) + 1
+        for req in r.get("reqs", []):
+            req_total += 1
+            if not req.get("doc_no"):
+                req_waiting += 1
+            elif req.get("done"):
+                req_done += 1
+
+    st.header("Technical Inspection — Dashboard")
+    st.caption("Read-only overview of inspection workload, request stages and preparation requirements.")
+    k = st.columns(5)
+    k[0].metric("Total Requests", len(rows))
+    k[1].metric("Open Requests", len(open_rows))
+    k[2].metric("Overdue Requests", len(overdue))
+    k[3].metric("Requirements", req_total)
+    k[4].metric("Requirements Awaiting Planning Document", req_waiting)
+
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Requests by Stage")
+        if stages:
+            st.bar_chart(pd.DataFrame([{"Stage": x, "Requests": n} for x, n in stages.items()])
+                         .set_index("Stage"))
+        else:
+            st.info("No inspection requests available.")
+    with right:
+        st.subheader("Requested Inspection Types")
+        if types:
+            st.bar_chart(pd.DataFrame([{"Inspection Type": x, "Requests": n} for x, n in types.items()])
+                         .set_index("Inspection Type"))
+        else:
+            st.info("No inspection types recorded.")
+
+    st.subheader("Preparation Requirements")
+    st.dataframe(pd.DataFrame([
+        {"Metric": "Total requirements", "Count": req_total},
+        {"Metric": "Awaiting Planning document", "Count": req_waiting},
+        {"Metric": "Completed linked documents", "Count": req_done},
+        {"Metric": "Linked but not completed", "Count": req_total - req_waiting - req_done},
+    ]), hide_index=True, width="stretch")
+    if overdue:
+        st.subheader("Overdue Inspection Requests")
+        show_df(overdue, {"doc_no": "No.", "doc_date": "Issue Date", "due_date": "Required By",
+                          "equip": "Equipment", "types_ar": "Inspection Types", "stage_ar": "Stage"})
+
+
+def page_inspection_daily():
+    """Daily Inspection activity report based on existing inspection lifecycle dates."""
+    st.header("Technical Inspection — Daily Report")
+    d = st.date_input("Report Date", date.today(), key="insp_daily_date")
+    day = d.isoformat()
+    rows = db.list_tirs()
+    issued = [r for r in rows if (r.get("doc_date") or "")[:10] == day]
+    studied = [r for r in rows if (r.get("studied_at") or "")[:10] == day]
+    submitted = [r for r in rows if (r.get("submitted_at") or "")[:10] == day]
+    sent = [r for r in rows if (r.get("sent_at") or "")[:10] == day]
+
+    k = st.columns(4)
+    k[0].metric("Requests Issued", len(issued))
+    k[1].metric("Requests Studied", len(studied))
+    k[2].metric("Reports Submitted", len(submitted))
+    k[3].metric("Reports Sent to Requester", len(sent))
+
+    activity = {}
+    for event, subset in (("Request Issued", issued), ("Request Studied", studied),
+                          ("Report Submitted", submitted), ("Report Sent", sent)):
+        for r in subset:
+            item = activity.setdefault(r["doc_no"], {
+                "No.": r["doc_no"], "Equipment": r.get("equip") or "",
+                "Work Request": r.get("wr_no") or "", "Issue Date": r.get("doc_date") or "",
+                "Stage": r.get("stage_ar") or "", "Activities": []})
+            item["Activities"].append(event)
+    report_rows = [dict(x, Activities="; ".join(x["Activities"])) for x in activity.values()]
+    st.subheader(f"Inspection activity on {day}")
+    if report_rows:
+        df = pd.DataFrame(report_rows)
+        st.dataframe(df, hide_index=True, width="stretch")
+        st.download_button("Download Daily Report (CSV)", df.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"Inspection_Daily_{day}.csv", mime="text/csv")
+    else:
+        st.info("No Inspection activity was recorded for this date.")
+
+
 def page_production_dashboard():
     """Read-only dashboard scoped to the signed-in Production department."""
     dept = ROLE
@@ -2888,7 +3036,8 @@ def _badges():
 
 
 if ROLE in PROD:
-    MENU = [("my", "📊 My Requests", page_my_requests),
+    MENU = [("home", "🏠 Home", page_production_home),
+            ("my", "📊 My Requests", page_my_requests),
             ("dash", "📈 Department Dashboard", page_production_dashboard),
             ("pm", "🗓️ Maintenance Plan", page_pm_plan),
             ("monthly", "📅 Monthly Report", page_monthly)]
@@ -2905,7 +3054,10 @@ elif ROLE == "PLN":
             ("dash", "📈 Overview Dashboard", page_dashboard),
             ("master", "🗂️ Master Data", page_master)]
 elif ROLE == "INSP":
-    MENU = [("tir", "🔬 Technical Inspection Reports", page_tir),
+    MENU = [("home", "🏠 Home", page_inspection_home),
+            ("tir", "🔬 Technical Inspection Reports", page_tir),
+            ("dash", "📈 Inspection Dashboard", page_inspection_dashboard),
+            ("daily", "📄 Daily Report", page_inspection_daily),
             ("monthly", "📅 Monthly Report", page_monthly)]
 else:
     MENU = [("home", "🏠 Work Orders & Today's Hours", page_maint_home),
