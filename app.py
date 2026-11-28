@@ -1541,10 +1541,10 @@ def page_hours(embedded=False):
             "SPV": hrs, "TECH": hrs, "OV.T": hrs, "CONT": hrs,
             "Remarks": st.column_config.TextColumn()})
     # Daily labor summary by workforce category; keep supervisors and overtime separate.
-    spv_total = sum(_num(edited["SPV"].sum()),)
-    tech_total = sum(_num(edited["TECH"].sum()),)
-    ot_total = sum(_num(edited["OV.T"].sum()),)
-    cont_total = sum(_num(edited["CONT"].sum()),)
+    spv_total = _num(edited["SPV"].sum())
+    tech_total = _num(edited["TECH"].sum())
+    ot_total = _num(edited["OV.T"].sum())
+    cont_total = _num(edited["CONT"].sum())
     total = spv_total + tech_total + ot_total + cont_total
     summary = st.columns(5)
     summary[0].metric("Supervisor Hours", f"{spv_total:g} h")
