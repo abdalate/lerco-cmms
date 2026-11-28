@@ -1487,6 +1487,12 @@ def page_wr_review():
 # ----------------------------------------------------------------------------
 def page_maint_home():
     g = db.maint_overview(ROLE)
+    all_open = sum(len(g[k]) for k in ("new", "ready", "waiting_sr", "in_progress", "awaiting"))
+    summary = st.columns(4)
+    summary[0].metric("Open Work Orders", all_open)
+    summary[1].metric("Awaiting Inspection / Stock Check", len(g["new"]))
+    summary[2].metric("Ready / In Progress", len(g["ready"]) + len(g["in_progress"]))
+    summary[3].metric("Awaiting Requester Acceptance", len(g["awaiting"]))
     t1, t2 = st.tabs(["📋 Work Orders", "⏱️ Daily Hours Entry"])
     with t1:
         names = {"all": "All", "new": "New (Awaiting Inspection)", "ready": "Ready for Execution",
