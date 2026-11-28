@@ -1438,6 +1438,24 @@ MANPOWER_FIELDS = ["approved", "supervisors", "technicians", "leave_n", "absent"
                    "sick", "in_train", "ex_train", "shift_rest", "other", "contract"]
 
 
+TECHNICIAN_DISTRIBUTION_FIELDS = ("technicians", "leave_n", "absent", "sick",
+                                  "in_train", "ex_train", "shift_rest", "other")
+
+
+def validate_manpower_distribution(approved, vals):
+    """Require every approved technician to be accounted for in the daily attendance."""
+    accounted = sum(int(vals.get(field, 0) or 0) for field in TECHNICIAN_DISTRIBUTION_FIELDS)
+    approved = int(approved or 0)
+    if accounted != approved:
+        difference = approved - accounted
+        raise ValueError(
+            f"Cannot save manpower: account for all {approved} approved technicians. "
+            f"Currently classified: {accounted}; difference: {difference}. "
+            "Adjust Available Technicians, Leave, Absent, Sick, Internal Training, "
+            "External Training, Shift Rest, or Other until the total matches."
+        )
+
+
 def save_manpower(report_date, dept, **vals):
     row = [int(vals.get(k, 0) or 0) for k in MANPOWER_FIELDS]
     if any(v < 0 for v in row):
@@ -1448,6 +1466,7 @@ def save_manpower(report_date, dept, **vals):
         # Approved is controlled by the administrator, never by daily department entry.
         approval = conn.execute("SELECT approved FROM department_approvals WHERE dept=?", (dept,)).fetchone()
         row[MANPOWER_FIELDS.index("approved")] = int(approval["approved"]) if approval else 0
+        validate_manpower_distribution(row[MANPOWER_FIELDS.index("approved")], dict(zip(MANPOWER_FIELDS, row)))
         used = conn.execute(
             """SELECT COALESCE(SUM(l.tech_hours), 0) AS used
                FROM labor_log l JOIN jobs j ON j.doc_no=l.job_no
