@@ -298,15 +298,6 @@ def done(msg):
     st.rerun()
 
 
-def pick_equipment(key):
-    """Select registered equipment (optional) to populate fields automatically; called outside the form."""
-    items = {str(e["id"]): e for e in db.list_equipment()}
-    sel = st.selectbox("Select registered equipment (optional)", [""] + list(items), key=f"pick_{key}",
-                       format_func=lambda x: "— Manual entry / new equipment —" if not x
-                       else items[x]["label"])
-    return items.get(sel, {})
-
-
 def equip_inputs(base):
     """Equipment identification fields: Tag No. or (name + location)."""
     c1, c2, c3 = st.columns(3)
@@ -423,8 +414,8 @@ def dlg_wr(parent=None, from_tir=None, from_jc=None):
     else:
         st.caption("For equipment maintenance or assistance. Planning issues a Work Order and/or Service Request "
                    "(crane, scaffolding, transport, contractor, etc.) as required.")
-        eq = pick_equipment("wr")
-        base = eq
+        eq = {}
+        base = {}
     with st.form(f"wr_form_{eq.get('id', 0)}_{(parent or {}).get('doc_no', '')}"
                  f"_{(from_tir or {}).get('doc_no', '')}_{(from_jc or {}).get('doc_no', '')}", border=False):
         c1, c2, c3 = st.columns(3)
@@ -435,7 +426,6 @@ def dlg_wr(parent=None, from_tir=None, from_jc=None):
         else:
             req = c2.selectbox("Requesting Department", PROD + ["PLN", "INSP"], format_func=db.dept_label)
         contact = c3.text_input("Contact / Phone")
-        need = st.text_input("Requested")
         ex = seg("Executing Party", [""] + [m for m in MAINT if m != ROLE], "wr_ex",
                  lambda x: "Not specified" if not x else db.dept_label(x))
         prio = seg("Priority", list(db.PRIORITY), "wr_prio", fmt_prio)
@@ -455,7 +445,7 @@ def dlg_wr(parent=None, from_tir=None, from_jc=None):
             try:
                 no = db.create_wr(d, req, ex, desc, tag, prio, contact, legacy or None,
                                   equipment_name=ename, location=eloc, actor=ROLE,
-                                  parent_job=(parent or {}).get("doc_no"), need=need or None,
+                                  parent_job=(parent or {}).get("doc_no"),
                                   cost_center=cc, materials=mats, special_equip=spec)
                 if from_jc:
                     db.link_wr_to_jc(no, from_jc["doc_no"], ROLE)
@@ -470,7 +460,7 @@ def dlg_wr(parent=None, from_tir=None, from_jc=None):
 def dlg_jc():
     st.caption("For minor jobs completed on the same day without complex spare parts or contractors. "
                "It goes directly to Maintenance, bypasses Planning, and is excluded from Planning reports.")
-    eq = pick_equipment("jc")
+    eq = {}
     with st.form(f"jc_form_{eq.get('id', 0)}", border=False):
         c1, c2, c3 = st.columns(3)
         d = c1.date_input("Issue Date", value=date.today(), disabled=True)
@@ -520,9 +510,8 @@ def dlg_wo(wr=None):
         d = c1.date_input("Issue Date", value=date.today(), disabled=True)
         est = c2.number_input("Estimated Duration (hours)", min_value=0.0, step=1.0)
         cc = c3.text_input("Cost Center", value=wr.get("cost_center") or "")
-        req_opts = PROD + MAINT + ["PLN", "INSP"]
-        req = seg("Requesting Department", req_opts, "wo_req", db.dept_en,
-                  default=wr.get("requesting_dept"))
+        req = wr.get("requesting_dept")
+        st.markdown(f"**Requesting Department:** {db.dept_label(req)}")
         ex = seg("Executing Party", MAINT, "wo_ex", db.dept_label, default=wr.get("exec_dept"))
         cat = seg("Maintenance Category (set by Planning)", list(db.CATEGORY), "wo_cat", fmt_cat,
                   default="PM" if "Scheduled" in (wr.get("need") or "") else "CM")
@@ -594,8 +583,8 @@ def dlg_sr(wr=None, job_no=None):
             job = c3.selectbox("Related Work Order (optional)", [""] + jobs,
                                index=(jobs.index(job_no) + 1) if job_no in jobs else 0,
                                format_func=lambda x: "—" if not x else x)
-        req_opts = MAINT + PROD
-        req = seg("Requesting Department", req_opts, "sr_req", db.dept_en, default=wr.get("requesting_dept"))
+        req = wr.get("requesting_dept")
+        st.markdown(f"**Requesting Department:** {db.dept_label(req)}")
         stype = seg("Service Type", list(db.SERVICE_TYPES), "sr_type", lambda x: db.SERVICE_TYPES[x],
                     default="OTHER" if pinfo and "OTH" in pinfo["depts"] else None)
         tag, ename, eloc = equip_inputs({"tag_no": wr.get("tag_no"),
